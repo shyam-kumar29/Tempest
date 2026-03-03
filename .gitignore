@@ -205,3 +205,24 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# =========================
+# Tempest-specific additions
+# =========================
+
+# macOS
+.DS_Store
+
+# Frontend (if added later)
+node_modules/
+.next/
+dist/
+build/
+
+# Local cache / data
+data/cache/
+cache/
+
+# Local SQLite databases
+*.sqlite3
+*.db
