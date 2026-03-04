@@ -1,0 +1,9 @@
+{
+  "python.analysis.extraPaths": [
+    "backend/app"
+  ],
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": [
+    "backend/tests"
+  ]
+}

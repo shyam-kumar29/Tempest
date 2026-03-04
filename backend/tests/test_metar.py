@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+import pytest
 
 from tempest.metar import normalize_metar
 
@@ -37,8 +37,16 @@ def test_normalize_metar_maps_core_fields() -> None:
 def test_normalize_metar_requires_raw_text() -> None:
     payload = {"icaoId": "KLAF"}
 
-    try:
+    with pytest.raises(ValueError, match="raw METAR"):
         normalize_metar(payload)
-        assert False, "Expected ValueError"
-    except ValueError as exc:
-        assert "raw METAR" in str(exc)
+
+
+def test_normalize_metar_converts_altim_hpa_to_inhg() -> None:
+    payload = {
+        "icaoId": "KLAF",
+        "rawOb": "KLAF 040202Z AUTO 06005KT 5SM -RA BR FEW007 OVC035 05/04 A3014",
+        "altim": 1020.7,
+    }
+
+    record = normalize_metar(payload)
+    assert record.altimeter_in_hg == 30.14

@@ -45,6 +45,22 @@ def _pick(payload: dict[str, Any], *candidates: str) -> Any:
     return None
 
 
+def _altimeter_to_inhg(payload: dict[str, Any]) -> float | None:
+    explicit_inhg = _as_float(_pick(payload, "altim_in_hg"))
+    if explicit_inhg is not None:
+        return explicit_inhg
+
+    altim = _as_float(_pick(payload, "altim"))
+    if altim is None:
+        return None
+
+    # AviationWeather METAR JSON provides altim in hPa (e.g. 1020.7),
+    # but some payload variants may already provide inHg values (e.g. 29.92).
+    if altim > 80:
+        return round(altim / 33.8638866667, 2)
+    return altim
+
+
 def normalize_metar(payload: dict[str, Any]) -> MetarRecord:
     icao_id = str(_pick(payload, "icaoId", "station_id", "station")).upper()
     raw_text = str(_pick(payload, "rawOb", "raw_text", "raw") or "")
@@ -73,7 +89,7 @@ def normalize_metar(payload: dict[str, Any]) -> MetarRecord:
         visibility_sm=_as_float(_pick(payload, "visib", "visibility_statute_mi")),
         temperature_c=_as_float(_pick(payload, "temp", "temp_c")),
         dewpoint_c=_as_float(_pick(payload, "dewp", "dewpoint_c")),
-        altimeter_in_hg=_as_float(_pick(payload, "altim", "altim_in_hg")),
+        altimeter_in_hg=_altimeter_to_inhg(payload),
         sea_level_pressure_mb=_as_float(_pick(payload, "slp", "sea_level_pressure_mb")),
         sky_cover=sky_cover,
         wx_string=_pick(payload, "wxString", "wx_string"),
