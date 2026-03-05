@@ -52,3 +52,29 @@ class MetarRecord:
             "wx_string": self.wx_string,
             "source_payload": self.source_payload,
         }
+
+
+@dataclass(slots=True)
+class TafRecord:
+    """Normalized TAF record used by Tempest internals and CLI output."""
+
+    icao_id: str
+    raw_text: str
+    issued_at: str | int | None
+    valid_from: str | int | None
+    valid_to: str | int | None
+    station_name: str | None
+    forecast: list[dict[str, Any]] = field(default_factory=list)
+    source_payload: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "icao_id": self.icao_id,
+            "raw_text": self.raw_text,
+            "issued_at": self.issued_at,
+            "valid_from": self.valid_from,
+            "valid_to": self.valid_to,
+            "station_name": self.station_name,
+            "forecast": self.forecast,
+            "source_payload": self.source_payload,
+        }

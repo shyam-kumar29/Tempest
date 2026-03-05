@@ -13,6 +13,7 @@ from .config import (
     DEFAULT_USER_AGENT,
 )
 from .metar import MetarNotFoundError, get_latest_metar
+from .taf import TafNotFoundError, get_latest_taf
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_USER_AGENT,
         help="Custom User-Agent for AviationWeather requests",
     )
+    parser.add_argument(
+        "--include-taf",
+        action="store_true",
+        help="Also fetch latest TAF for the same station",
+    )
     return parser
 
 
@@ -64,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--min-fetch-interval-seconds must be >= 0")
 
     try:
-        record, source = get_latest_metar(
+        metar_record, metar_source = get_latest_metar(
             args.icao,
             cache_dir=Path(args.cache_dir),
             cache_ttl_seconds=args.cache_ttl_seconds,
@@ -79,9 +85,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Fetch failed: {exc}", file=sys.stderr)
         return 1
 
-    output = {
-        "source": source,
-        "metar": record.to_dict(),
-    }
+    output: dict[str, object] = {"source": metar_source, "metar": metar_record.to_dict()}
+
+    if args.include_taf:
+        try:
+            taf_record, taf_source = get_latest_taf(
+                args.icao,
+                cache_dir=Path(args.cache_dir),
+                cache_ttl_seconds=args.cache_ttl_seconds,
+                min_fetch_interval_seconds=args.min_fetch_interval_seconds,
+                user_agent=args.user_agent,
+                prefer_cache=not args.no_cache,
+            )
+            output["taf"] = taf_record.to_dict()
+            output["taf_source"] = taf_source
+        except (ValueError, TafNotFoundError) as exc:
+            output["taf"] = None
+            output["taf_error"] = str(exc)
+        except Exception as exc:
+            output["taf"] = None
+            output["taf_error"] = f"TAF fetch failed: {exc}"
+
     print(json.dumps(output, indent=2, sort_keys=True))
     return 0

@@ -10,7 +10,13 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from .config import API_BASE_URL, DEFAULT_API_TIMEOUT_SECONDS, DEFAULT_FORMAT, METAR_PATH
+from .config import (
+    API_BASE_URL,
+    DEFAULT_API_TIMEOUT_SECONDS,
+    DEFAULT_FORMAT,
+    METAR_PATH,
+    TAF_PATH,
+)
 
 
 class AviationWeatherError(RuntimeError):
@@ -26,43 +32,10 @@ class AviationWeatherClient:
     backoff_base_seconds: float = 0.5
 
     def fetch_latest_metar_json(self, icao_id: str) -> list[dict[str, Any]]:
-        station = icao_id.strip().upper()
-        if len(station) != 4 or not station.isalpha():
-            raise ValueError(f"Invalid ICAO id: {icao_id!r}")
+        return self._fetch_station_data_json(icao_id=icao_id, path=METAR_PATH, product="METAR")
 
-        query = urlencode(
-            {
-                "ids": station,
-                "format": DEFAULT_FORMAT,
-            }
-        )
-        url = f"{self.base_url}{METAR_PATH}?{query}"
-
-        request = Request(
-            url=url,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": self.user_agent,
-            },
-            method="GET",
-        )
-
-        body = self._read_with_retries(request=request, station=station)
-
-        try:
-            parsed = json.loads(body)
-        except json.JSONDecodeError as exc:
-            raise AviationWeatherError("AviationWeather returned invalid JSON") from exc
-
-        if not isinstance(parsed, list):
-            raise AviationWeatherError("Unexpected METAR response shape (expected list)")
-
-        typed: list[dict[str, Any]] = []
-        for item in parsed:
-            if isinstance(item, dict):
-                typed.append(item)
-
-        return typed
+    def fetch_latest_taf_json(self, icao_id: str) -> list[dict[str, Any]]:
+        return self._fetch_station_data_json(icao_id=icao_id, path=TAF_PATH, product="TAF")
 
     def _read_with_retries(self, request: Request, station: str) -> str:
         last_error: Exception | None = None
@@ -93,3 +66,43 @@ class AviationWeatherClient:
         raise AviationWeatherError(
             f"AviationWeather request failed for ICAO {station} with unknown error"
         )
+
+    def _fetch_station_data_json(
+        self, *, icao_id: str, path: str, product: str
+    ) -> list[dict[str, Any]]:
+        station = icao_id.strip().upper()
+        if len(station) != 4 or not station.isalpha():
+            raise ValueError(f"Invalid ICAO id: {icao_id!r}")
+
+        query = urlencode({"ids": station, "format": DEFAULT_FORMAT})
+        url = f"{self.base_url}{path}?{query}"
+
+        request = Request(
+            url=url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": self.user_agent,
+            },
+            method="GET",
+        )
+
+        body = self._read_with_retries(request=request, station=station)
+
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise AviationWeatherError(
+                f"AviationWeather returned invalid JSON for {product}"
+            ) from exc
+
+        if not isinstance(parsed, list):
+            raise AviationWeatherError(
+                f"Unexpected {product} response shape (expected list)"
+            )
+
+        typed: list[dict[str, Any]] = []
+        for item in parsed:
+            if isinstance(item, dict):
+                typed.append(item)
+
+        return typed
