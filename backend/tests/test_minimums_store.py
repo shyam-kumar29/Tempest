@@ -17,8 +17,15 @@ def _sample_profile(profile_id: str = "primary") -> MinimumsProfile:
         max_surface_wind_kt=20,
         max_crosswind_kt=12,
         max_gust_kt=28,
+        max_tailwind_kt=7,
         allow_night=False,
         allow_ifr=False,
+        min_runway_length_ft=3000,
+        allowed_runway_surfaces=["asphalt", "concrete"],
+        require_dry_runway=True,
+        min_fuel_reserve_min=60,
+        max_density_altitude_ft=6000,
+        require_alternate_for_ifr=True,
         notes="No night flights",
     )
 
@@ -35,6 +42,9 @@ def test_store_upsert_get_list_delete(tmp_path: Path) -> None:
     assert saved.profile_id == "primary"
     assert fetched is not None
     assert fetched.display_name == "Primary"
+    assert fetched.min_runway_length_ft == 3000
+    assert fetched.allowed_runway_surfaces == ["asphalt", "concrete"]
+    assert fetched.min_fuel_reserve_min == 60
     assert len(listed) == 1
     assert deleted is True
     assert missing is None
