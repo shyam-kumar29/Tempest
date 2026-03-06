@@ -7,6 +7,7 @@ Pure Python backend foundation for aviation weather workflows.
 - Fetch latest METAR from AviationWeather.gov Data API
 - Optionally fetch latest TAF from AviationWeather.gov Data API
 - Normalize the METAR payload into a typed internal model
+- Manage personal minimums profiles in a local JSON store
 - Cache responses locally to reduce API calls
 - Expose a CLI command for station lookup
 
@@ -60,4 +61,23 @@ When `--include-taf` is set, output includes `taf` and `taf_source` (or `taf_err
 
 ```bash
 pytest -q backend/tests
+```
+
+## Manage personal minimums
+
+Set/update a profile:
+
+```bash
+python3 backend/scripts/manage_minimums.py set primary \"Primary Profile\" \
+  --min-ceiling-ft-agl 2500 \
+  --min-visibility-sm 5 \
+  --max-surface-wind-kt 20 \
+  --max-crosswind-kt 12 \
+  --max-gust-kt 28
+```
+
+List profiles:
+
+```bash
+python3 backend/scripts/manage_minimums.py list
 ```

@@ -221,6 +221,7 @@ build/
 
 # Local cache / data
 data/cache/
+data/minimums/
 cache/
 
 # Local SQLite databases
