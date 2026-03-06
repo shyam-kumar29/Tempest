@@ -76,11 +76,15 @@ python3 backend/scripts/manage_minimums.py set primary \"Primary Profile\" \
   --max-gust-kt 28 \
   --max-tailwind-kt 7 \
   --min-runway-length-ft 3000 \
+  --min-runway-width-ft 75 \
   --allowed-runway-surface asphalt \
   --allowed-runway-surface concrete \
-  --min-fuel-reserve-min 60 \
+  --min-fuel-reserve-day-min 45 \
+  --min-fuel-reserve-night-min 60 \
   --allow-ifr
 ```
+
+All minimums fields are optional except `profile_id` and `display_name`. If a field is omitted, it is stored as empty (`null`) and ignored by downstream evaluation logic.
 
 List profiles:
 
