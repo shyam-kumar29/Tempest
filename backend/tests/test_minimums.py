@@ -18,9 +18,12 @@ def test_minimums_profile_validate_success() -> None:
         allow_night=False,
         allow_ifr=False,
         min_runway_length_ft=3000,
+        min_runway_width_ft=75,
         allowed_runway_surfaces=["asphalt", "concrete"],
         require_dry_runway=True,
-        min_fuel_reserve_min=60,
+        min_fuel_reserve_min=45,
+        min_fuel_reserve_day_min=45,
+        min_fuel_reserve_night_min=60,
         max_density_altitude_ft=6000,
         require_alternate_for_ifr=True,
     )
@@ -54,3 +57,10 @@ def test_minimums_profile_validate_rejects_unknown_runway_surface() -> None:
 
     with pytest.raises(MinimumsValidationError, match="Unsupported runway surface"):
         profile.validate()
+
+
+def test_minimums_profile_optional_fields_can_be_none() -> None:
+    profile = MinimumsProfile(profile_id="basic", display_name="Basic")
+    profile.validate()
+    assert profile.min_ceiling_ft_agl is None
+    assert profile.min_fuel_reserve_night_min is None
