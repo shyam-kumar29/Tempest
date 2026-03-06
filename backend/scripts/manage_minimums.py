@@ -35,8 +35,23 @@ def build_parser() -> argparse.ArgumentParser:
     set_cmd.add_argument("--max-surface-wind-kt", type=int, required=True)
     set_cmd.add_argument("--max-crosswind-kt", type=int, required=True)
     set_cmd.add_argument("--max-gust-kt", type=int)
+    set_cmd.add_argument("--max-tailwind-kt", type=int)
     set_cmd.add_argument("--allow-night", action="store_true")
     set_cmd.add_argument("--allow-ifr", action="store_true")
+    set_cmd.add_argument("--min-runway-length-ft", type=int, default=0)
+    set_cmd.add_argument(
+        "--allowed-runway-surface",
+        action="append",
+        dest="allowed_runway_surfaces",
+        help=(
+            "Allowed runway surface (repeat for multiple). "
+            "Examples: asphalt, concrete, grass, gravel"
+        ),
+    )
+    set_cmd.add_argument("--require-dry-runway", action="store_true")
+    set_cmd.add_argument("--min-fuel-reserve-min", type=int, default=45)
+    set_cmd.add_argument("--max-density-altitude-ft", type=int)
+    set_cmd.add_argument("--no-require-alternate-for-ifr", action="store_true")
     set_cmd.add_argument("--notes")
 
     get_cmd = sub.add_parser("get", help="Get a minimums profile by id")
@@ -66,8 +81,15 @@ def main(argv: list[str] | None = None) -> int:
                 max_surface_wind_kt=args.max_surface_wind_kt,
                 max_crosswind_kt=args.max_crosswind_kt,
                 max_gust_kt=args.max_gust_kt,
+                max_tailwind_kt=args.max_tailwind_kt,
                 allow_night=args.allow_night,
                 allow_ifr=args.allow_ifr,
+                min_runway_length_ft=args.min_runway_length_ft,
+                allowed_runway_surfaces=args.allowed_runway_surfaces,
+                require_dry_runway=args.require_dry_runway,
+                min_fuel_reserve_min=args.min_fuel_reserve_min,
+                max_density_altitude_ft=args.max_density_altitude_ft,
+                require_alternate_for_ifr=not args.no_require_alternate_for_ifr,
                 notes=args.notes,
             )
             saved = store.upsert_profile(profile)
