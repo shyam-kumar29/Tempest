@@ -73,7 +73,13 @@ python3 backend/scripts/manage_minimums.py set primary \"Primary Profile\" \
   --min-visibility-sm 5 \
   --max-surface-wind-kt 20 \
   --max-crosswind-kt 12 \
-  --max-gust-kt 28
+  --max-gust-kt 28 \
+  --max-tailwind-kt 7 \
+  --min-runway-length-ft 3000 \
+  --allowed-runway-surface asphalt \
+  --allowed-runway-surface concrete \
+  --min-fuel-reserve-min 60 \
+  --allow-ifr
 ```
 
 List profiles:
