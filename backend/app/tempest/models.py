@@ -78,3 +78,45 @@ class TafRecord:
             "forecast": self.forecast,
             "source_payload": self.source_payload,
         }
+
+
+@dataclass(slots=True)
+class RunwayRecord:
+    runway_id: str
+    heading_degrees: float | None
+    length_ft: int | None
+    width_ft: int | None
+    surface: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "runway_id": self.runway_id,
+            "heading_degrees": self.heading_degrees,
+            "length_ft": self.length_ft,
+            "width_ft": self.width_ft,
+            "surface": self.surface,
+        }
+
+
+@dataclass(slots=True)
+class AirportRecord:
+    icao_id: str
+    iata_id: str | None
+    name: str | None
+    latitude: float | None
+    longitude: float | None
+    elevation_ft: int | None
+    runways: list[RunwayRecord] = field(default_factory=list)
+    source_payload: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "icao_id": self.icao_id,
+            "iata_id": self.iata_id,
+            "name": self.name,
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            "elevation_ft": self.elevation_ft,
+            "runways": [runway.to_dict() for runway in self.runways],
+            "source_payload": self.source_payload,
+        }
