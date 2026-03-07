@@ -12,8 +12,10 @@ from .config import (
     DEFAULT_MIN_FETCH_INTERVAL_SECONDS,
     DEFAULT_USER_AGENT,
 )
+from .airport import AirportNotFoundError, get_airport
 from .metar import MetarNotFoundError, get_latest_metar
 from .taf import TafNotFoundError, get_latest_taf
+from .wind import compute_runway_wind_components
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,6 +58,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-taf",
         action="store_true",
         help="Also fetch latest TAF for the same station",
+    )
+    parser.add_argument(
+        "--include-airport",
+        action="store_true",
+        help="Also fetch airport/runway data for the same station",
+    )
+    parser.add_argument(
+        "--include-runway-wind",
+        action="store_true",
+        help="Compute runway wind components (requires airport runway headings)",
     )
     return parser
 
@@ -105,6 +117,35 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             output["taf"] = None
             output["taf_error"] = f"TAF fetch failed: {exc}"
+
+    if args.include_airport or args.include_runway_wind:
+        try:
+            airport_record, airport_source = get_airport(
+                args.icao,
+                cache_dir=Path(args.cache_dir),
+                cache_ttl_seconds=args.cache_ttl_seconds,
+                min_fetch_interval_seconds=args.min_fetch_interval_seconds,
+                user_agent=args.user_agent,
+                prefer_cache=not args.no_cache,
+            )
+            output["airport"] = airport_record.to_dict()
+            output["airport_source"] = airport_source
+
+            if args.include_runway_wind:
+                output["runway_wind_components"] = compute_runway_wind_components(
+                    metar=metar_record,
+                    airport=airport_record,
+                )
+        except (ValueError, AirportNotFoundError) as exc:
+            output["airport"] = None
+            output["airport_error"] = str(exc)
+            if args.include_runway_wind:
+                output["runway_wind_components"] = []
+        except Exception as exc:
+            output["airport"] = None
+            output["airport_error"] = f"Airport fetch failed: {exc}"
+            if args.include_runway_wind:
+                output["runway_wind_components"] = []
 
     print(json.dumps(output, indent=2, sort_keys=True))
     return 0
