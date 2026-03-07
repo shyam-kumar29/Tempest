@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .config import (
+    AIRPORT_PATH,
     API_BASE_URL,
     DEFAULT_API_TIMEOUT_SECONDS,
     DEFAULT_FORMAT,
@@ -36,6 +37,11 @@ class AviationWeatherClient:
 
     def fetch_latest_taf_json(self, icao_id: str) -> list[dict[str, Any]]:
         return self._fetch_station_data_json(icao_id=icao_id, path=TAF_PATH, product="TAF")
+
+    def fetch_airport_json(self, icao_id: str) -> list[dict[str, Any]]:
+        return self._fetch_station_data_json(
+            icao_id=icao_id, path=AIRPORT_PATH, product="AIRPORT"
+        )
 
     def _read_with_retries(self, request: Request, station: str) -> str:
         last_error: Exception | None = None
