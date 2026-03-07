@@ -5,6 +5,7 @@ from __future__ import annotations
 API_BASE_URL = "https://aviationweather.gov/api/data"
 METAR_PATH = "/metar"
 TAF_PATH = "/taf"
+AIRPORT_PATH = "/airport"
 DEFAULT_FORMAT = "json"
 
 DEFAULT_CACHE_TTL_SECONDS = 300
