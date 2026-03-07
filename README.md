@@ -6,8 +6,10 @@ Pure Python backend foundation for aviation weather workflows.
 
 - Fetch latest METAR from AviationWeather.gov Data API
 - Optionally fetch latest TAF from AviationWeather.gov Data API
+- Optionally fetch airport/runway data from AviationWeather.gov Data API
 - Normalize the METAR payload into a typed internal model
 - Manage personal minimums profiles in a local JSON store
+- Compute runway wind components when runway heading data is available
 - Cache responses locally to reduce API calls
 - Expose a CLI command for station lookup
 
@@ -33,7 +35,9 @@ python3 backend/scripts/fetch_metar.py KLAF \
   --cache-dir data/cache \
   --cache-ttl-seconds 300 \
   --min-fetch-interval-seconds 60 \
-  --include-taf
+  --include-taf \
+  --include-airport \
+  --include-runway-wind
 ```
 
 Example output shape:
@@ -56,6 +60,8 @@ Example output shape:
 
 `source` indicates if the response came from `api`, `cache`, `throttled-cache`, or `stale-cache`.
 When `--include-taf` is set, output includes `taf` and `taf_source` (or `taf_error`).
+When `--include-airport` is set, output includes `airport` and `airport_source` (or `airport_error`).
+When `--include-runway-wind` is set, output includes `runway_wind_components`.
 
 ## Tests
 
