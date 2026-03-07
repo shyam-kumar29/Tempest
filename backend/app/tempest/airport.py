@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -45,23 +46,67 @@ def _as_int(value: Any) -> int | None:
         return None
 
 
-def _normalize_runway(item: dict[str, Any]) -> RunwayRecord | None:
+def _reciprocal_heading(heading: float) -> float:
+    return (heading + 180.0) % 360.0
+
+
+def _parse_dimension(value: Any) -> tuple[int | None, int | None]:
+    if value is None:
+        return (None, None)
+    text = str(value).strip().lower()
+    match = re.search(r"(\d+)\s*[x×]\s*(\d+)", text)
+    if not match:
+        return (None, None)
+    return (int(match.group(1)), int(match.group(2)))
+
+
+def _normalize_runway(item: dict[str, Any]) -> list[RunwayRecord]:
     runway_id = str(_pick(item, "id", "runwayId", "name", "ident", "rwy") or "").strip()
     if not runway_id:
-        return None
+        return []
 
-    heading = _as_float(_pick(item, "heading", "bearing", "magHdg", "heading_deg"))
+    heading = _as_float(
+        _pick(item, "heading", "bearing", "magHdg", "heading_deg", "alignment")
+    )
     length_ft = _as_int(_pick(item, "length_ft", "length", "len"))
     width_ft = _as_int(_pick(item, "width_ft", "width", "wid"))
+    if length_ft is None or width_ft is None:
+        parsed_length, parsed_width = _parse_dimension(_pick(item, "dimension", "dimensions"))
+        if length_ft is None:
+            length_ft = parsed_length
+        if width_ft is None:
+            width_ft = parsed_width
     surface = _pick(item, "surface", "surf")
+    surface_str = str(surface).lower() if surface is not None else None
 
-    return RunwayRecord(
-        runway_id=runway_id,
-        heading_degrees=heading,
-        length_ft=length_ft,
-        width_ft=width_ft,
-        surface=str(surface).lower() if surface is not None else None,
-    )
+    if "/" in runway_id:
+        parts = [part.strip() for part in runway_id.split("/") if part.strip()]
+        if len(parts) >= 2 and heading is not None:
+            primary = RunwayRecord(
+                runway_id=parts[0],
+                heading_degrees=heading,
+                length_ft=length_ft,
+                width_ft=width_ft,
+                surface=surface_str,
+            )
+            reciprocal = RunwayRecord(
+                runway_id=parts[1],
+                heading_degrees=_reciprocal_heading(heading),
+                length_ft=length_ft,
+                width_ft=width_ft,
+                surface=surface_str,
+            )
+            return [primary, reciprocal]
+
+    return [
+        RunwayRecord(
+            runway_id=runway_id,
+            heading_degrees=heading,
+            length_ft=length_ft,
+            width_ft=width_ft,
+            surface=surface_str,
+        )
+    ]
 
 
 def normalize_airport(payload: dict[str, Any]) -> AirportRecord:
@@ -74,9 +119,7 @@ def normalize_airport(payload: dict[str, Any]) -> AirportRecord:
     if isinstance(raw_runways, list):
         for runway in raw_runways:
             if isinstance(runway, dict):
-                normalized = _normalize_runway(runway)
-                if normalized is not None:
-                    runways.append(normalized)
+                runways.extend(_normalize_runway(runway))
 
     return AirportRecord(
         icao_id=icao_id,

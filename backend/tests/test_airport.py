@@ -33,6 +33,28 @@ def test_normalize_airport_maps_runway_fields() -> None:
     assert airport.runways[0].surface == "asphalt"
 
 
+def test_normalize_airport_uses_alignment_and_derives_reciprocal_runway() -> None:
+    payload = {
+        "icaoId": "KLAF",
+        "runways": [
+            {
+                "id": "10/28",
+                "alignment": 99,
+                "length_ft": 6600,
+                "width_ft": 150,
+                "surface": "ASPHALT",
+            }
+        ],
+    }
+
+    airport = normalize_airport(payload)
+    assert len(airport.runways) == 2
+
+    by_id = {runway.runway_id: runway for runway in airport.runways}
+    assert by_id["10"].heading_degrees == 99.0
+    assert by_id["28"].heading_degrees == 279.0
+
+
 def test_get_airport_uses_cache(tmp_path: Path) -> None:
     cache = JsonFileCache(root=tmp_path, ttl_seconds=300)
     cache.set(
@@ -47,3 +69,25 @@ def test_get_airport_uses_cache(tmp_path: Path) -> None:
 
     assert source == "cache"
     assert airport.icao_id == "KLAF"
+
+
+def test_normalize_airport_parses_dimension_field_for_length_and_width() -> None:
+    payload = {
+        "icaoId": "KLAF",
+        "runways": [
+            {
+                "id": "05/23",
+                "alignment": 49,
+                "dimension": "6600x150",
+                "surface": "CONCRETE",
+            }
+        ],
+    }
+
+    airport = normalize_airport(payload)
+    by_id = {runway.runway_id: runway for runway in airport.runways}
+
+    assert by_id["05"].length_ft == 6600
+    assert by_id["05"].width_ft == 150
+    assert by_id["23"].length_ft == 6600
+    assert by_id["23"].width_ft == 150
