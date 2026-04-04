@@ -15,14 +15,16 @@ def _metar(
     wind_gust_kt: int | None = None,
     sky_cover: list[dict[str, object]] | None = None,
     observed_at: str | int | None = "2026-04-04T15:00:00Z",
+    latitude: float | None = 40.4124,
+    longitude: float | None = -86.9474,
 ) -> MetarRecord:
     return MetarRecord(
         icao_id="KLAF",
         raw_text="KLAF ...",
         observed_at=observed_at,
         station_name=None,
-        latitude=None,
-        longitude=None,
+        latitude=latitude,
+        longitude=longitude,
         elevation_m=None,
         flight_category=flight_category,
         wind_direction_degrees=wind_direction_degrees,
@@ -44,8 +46,8 @@ def _airport() -> AirportRecord:
         icao_id="KLAF",
         iata_id=None,
         name="Test Airport",
-        latitude=None,
-        longitude=None,
+        latitude=40.4124,
+        longitude=-86.9474,
         elevation_ft=None,
         runways=[
             RunwayRecord("22", 220.0, 6600, 150, "asphalt"),
@@ -127,9 +129,23 @@ def test_evaluate_conditions_blocks_night_when_profile_disallows_it() -> None:
         display_name="Primary",
         allow_night=False,
     )
-    metar = _metar(observed_at="2026-04-04T23:00:00Z")
+    metar = _metar(observed_at="2026-04-05T03:00:00Z")
 
     result = evaluate_conditions(profile=profile, metar=metar)
 
     assert result.decision == "no-go"
     assert any("night" in reason.lower() for reason in result.fail_reasons)
+
+
+def test_evaluate_conditions_treats_klaf_afternoon_observation_as_daytime() -> None:
+    profile = MinimumsProfile(
+        profile_id="primary",
+        display_name="Primary",
+        allow_night=False,
+    )
+    metar = _metar(observed_at="2026-04-04T18:54:00Z")
+
+    result = evaluate_conditions(profile=profile, metar=metar)
+
+    assert result.decision != "no-go"
+    assert not any("night operations" in reason.lower() for reason in result.fail_reasons)

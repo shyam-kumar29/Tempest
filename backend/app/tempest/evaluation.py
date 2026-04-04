@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,6 +25,67 @@ def _parse_observed_time(value: str | int | None) -> datetime | None:
     return None
 
 
+def _day_of_year(dt: datetime) -> int:
+    return dt.timetuple().tm_yday
+
+
+def _normalize_hour_utc(value: float) -> float:
+    while value < 0:
+        value += 24
+    while value >= 24:
+        value -= 24
+    return value
+
+
+def _solar_event_utc_hour(
+    observed_at: datetime,
+    latitude: float,
+    longitude: float,
+    *,
+    is_sunrise: bool,
+) -> float | None:
+    zenith = math.radians(90.833)
+    day = _day_of_year(observed_at)
+    lng_hour = longitude / 15.0
+    approx = day + ((6.0 - lng_hour) / 24.0) if is_sunrise else day + ((18.0 - lng_hour) / 24.0)
+
+    mean_anomaly = math.radians((0.9856 * approx) - 3.289)
+    true_longitude_deg = math.degrees(mean_anomaly)
+    true_longitude_deg += 1.916 * math.sin(mean_anomaly)
+    true_longitude_deg += 0.020 * math.sin(2 * mean_anomaly)
+    true_longitude_deg += 282.634
+    true_longitude_deg %= 360.0
+    true_longitude = math.radians(true_longitude_deg)
+
+    right_ascension_deg = math.degrees(math.atan(0.91764 * math.tan(true_longitude)))
+    right_ascension_deg %= 360.0
+
+    l_quadrant = math.floor(true_longitude_deg / 90.0) * 90.0
+    ra_quadrant = math.floor(right_ascension_deg / 90.0) * 90.0
+    right_ascension_deg += l_quadrant - ra_quadrant
+    right_ascension_hours = right_ascension_deg / 15.0
+
+    sin_dec = 0.39782 * math.sin(true_longitude)
+    cos_dec = math.cos(math.asin(sin_dec))
+    lat_rad = math.radians(latitude)
+
+    cos_hour_angle = (
+        math.cos(zenith) - (sin_dec * math.sin(lat_rad))
+    ) / (cos_dec * math.cos(lat_rad))
+    if cos_hour_angle < -1.0 or cos_hour_angle > 1.0:
+        return None
+
+    hour_angle_deg = (
+        360.0 - math.degrees(math.acos(cos_hour_angle))
+        if is_sunrise
+        else math.degrees(math.acos(cos_hour_angle))
+    )
+    hour_angle_hours = hour_angle_deg / 15.0
+
+    local_mean_time = hour_angle_hours + right_ascension_hours - (0.06571 * approx) - 6.622
+    return _normalize_hour_utc(local_mean_time - lng_hour)
+
+
 def _lowest_ceiling_ft(metar: MetarRecord) -> int | None:
     ceilings: list[int] = []
     for layer in metar.sky_cover:
@@ -36,11 +98,31 @@ def _lowest_ceiling_ft(metar: MetarRecord) -> int | None:
     return min(ceilings)
 
 
-def _is_night(observed_at: datetime | None) -> bool | None:
-    if observed_at is None:
+def _is_night(
+    observed_at: datetime | None,
+    *,
+    latitude: float | None,
+    longitude: float | None,
+) -> bool | None:
+    if observed_at is None or latitude is None or longitude is None:
         return None
-    hour = observed_at.hour
-    return hour < 6 or hour >= 18
+
+    sunrise_hour = _solar_event_utc_hour(observed_at, latitude, longitude, is_sunrise=True)
+    sunset_hour = _solar_event_utc_hour(observed_at, latitude, longitude, is_sunrise=False)
+    if sunrise_hour is None or sunset_hour is None:
+        return None
+
+    observed_hour = (
+        observed_at.hour
+        + (observed_at.minute / 60.0)
+        + (observed_at.second / 3600.0)
+    )
+    if sunrise_hour <= sunset_hour:
+        return observed_hour < sunrise_hour or observed_hour >= sunset_hour
+
+    # When sunset falls after 00:00 UTC, daytime spans [sunrise, 24) union [0, sunset).
+    is_day = observed_hour >= sunrise_hour or observed_hour < sunset_hour
+    return not is_day
 
 
 def _pick_best_runway(runway_wind_components: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -67,7 +149,11 @@ def evaluate_conditions(
     unknowns: list[str] = []
 
     observed_at = _parse_observed_time(metar.observed_at)
-    is_night = _is_night(observed_at)
+    is_night = _is_night(
+        observed_at,
+        latitude=metar.latitude if metar.latitude is not None else (airport.latitude if airport else None),
+        longitude=metar.longitude if metar.longitude is not None else (airport.longitude if airport else None),
+    )
     ceiling_ft = _lowest_ceiling_ft(metar)
     best_runway = _pick_best_runway(runway_wind_components or [])
 
