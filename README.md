@@ -10,10 +10,11 @@ Pure Python backend foundation for aviation weather workflows.
 - Normalize the METAR payload into a typed internal model
 - Manage personal minimums profiles in a local JSON store
 - Compute runway wind components when runway heading data is available
+- Evaluate current conditions against a saved personal minimums profile
 - Cache responses locally to reduce API calls
 - Expose a CLI command for station lookup
 
-TAF fetch, personal minimums evaluation, and runway wind component logic are intentionally deferred.
+Density altitude and fuel-planning checks are still stored as profile data, but they are not fully computed yet in the evaluation engine.
 
 ## Project layout
 
@@ -97,3 +98,25 @@ List profiles:
 ```bash
 python3 backend/scripts/manage_minimums.py list
 ```
+
+## Evaluate a flight
+
+Evaluate one saved profile against the current airport weather:
+
+```bash
+python3 backend/scripts/evaluate_flight.py KLAF primary --include-taf
+```
+
+By default, evaluation checks the live API first so the weather data is as current as possible. Cached data is only used as a fallback if the live fetch fails. Use `--prefer-cache` only if you explicitly want to trust fresh cache entries first.
+
+The evaluator currently checks:
+
+- visibility
+- ceiling
+- surface wind
+- gusts
+- IFR/night restrictions
+- runway length, width, and surface suitability
+- crosswind and tailwind against the best available runway
+
+The result is explainable JSON with `decision`, `fail_reasons`, `caution_reasons`, `pass_reasons`, and `unknowns`.
