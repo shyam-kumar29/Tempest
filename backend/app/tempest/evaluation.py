@@ -8,21 +8,7 @@ from typing import Any
 
 from .minimums import MinimumsProfile
 from .models import AirportRecord, EvaluationResult, MetarRecord, TafRecord
-
-
-def _parse_observed_time(value: str | int | None) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, int):
-        return datetime.fromtimestamp(value, tz=UTC)
-    if isinstance(value, str):
-        try:
-            if value.endswith("Z"):
-                return datetime.fromisoformat(value.replace("Z", "+00:00"))
-            return datetime.fromisoformat(value)
-        except ValueError:
-            return None
-    return None
+from .timeutils import parse_aviation_time, to_local_time_string
 
 
 def _day_of_year(dt: datetime) -> int:
@@ -148,7 +134,7 @@ def evaluate_conditions(
     pass_reasons: list[str] = []
     unknowns: list[str] = []
 
-    observed_at = _parse_observed_time(metar.observed_at)
+    observed_at = parse_aviation_time(metar.observed_at)
     is_night = _is_night(
         observed_at,
         latitude=metar.latitude if metar.latitude is not None else (airport.latitude if airport else None),
@@ -336,9 +322,22 @@ def evaluate_conditions(
         "wind_speed_kt": metar.wind_speed_kt,
         "wind_gust_kt": metar.wind_gust_kt,
         "observed_at": metar.observed_at,
+        "observed_at_local": to_local_time_string(metar.observed_at),
         "is_night": is_night,
     }
-    taf_summary = None if taf is None else {"raw_text": taf.raw_text, "issued_at": taf.issued_at}
+    taf_summary = (
+        None
+        if taf is None
+        else {
+            "raw_text": taf.raw_text,
+            "issued_at": taf.issued_at,
+            "issued_at_local": to_local_time_string(taf.issued_at),
+            "valid_from": taf.valid_from,
+            "valid_from_local": to_local_time_string(taf.valid_from),
+            "valid_to": taf.valid_to,
+            "valid_to_local": to_local_time_string(taf.valid_to),
+        }
+    )
     airport_summary = None
     if airport is not None:
         airport_summary = {
