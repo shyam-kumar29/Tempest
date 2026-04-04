@@ -109,6 +109,12 @@ python3 backend/scripts/evaluate_flight.py KLAF primary --include-taf
 
 By default, evaluation checks the live API first so the weather data is as current as possible. Cached data is only used as a fallback if the live fetch fails. Use `--prefer-cache` only if you explicitly want to trust fresh cache entries first.
 
+For evaluation specifically, cached reports are only trusted when the underlying data is still current:
+
+- METAR: observation/report time must be within 1 hour of current UTC time
+- TAF: current time must still fall inside the TAF valid window
+- Airport data: cached for longer because runway metadata changes rarely
+
 The evaluator currently checks:
 
 - visibility

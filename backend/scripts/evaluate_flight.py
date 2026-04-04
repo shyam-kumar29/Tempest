@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -13,11 +14,17 @@ APP_ROOT = REPO_ROOT / "backend" / "app"
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
+from tempest.cache import JsonFileCache
 from tempest.airport import get_airport
 from tempest.evaluation import evaluate_conditions
 from tempest.metar import get_latest_metar
 from tempest.minimums_store import JsonMinimumsStore, MinimumsStoreError
 from tempest.taf import get_latest_taf
+from tempest.timeutils import (
+    is_airport_payload_current,
+    is_metar_payload_current,
+    is_taf_payload_current,
+)
 from tempest.wind import compute_runway_wind_components
 
 
@@ -57,29 +64,50 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Error: minimums profile {args.profile_id!r} was not found", file=sys.stderr)
             return 2
 
+        cache_dir = Path(args.cache_dir)
+        cache = JsonFileCache(cache_dir, ttl_seconds=args.cache_ttl_seconds)
+        now = datetime.now(UTC)
+
+        metar_wrapped = cache.get_stale(f"metar_{args.icao.strip().upper()}")
+        metar_prefer_cache = args.prefer_cache or (
+            isinstance(metar_wrapped, dict)
+            and isinstance(metar_wrapped.get("payload"), dict)
+            and is_metar_payload_current(metar_wrapped["payload"], now=now)
+        )
+
         metar, metar_source = get_latest_metar(
             args.icao,
-            cache_dir=Path(args.cache_dir),
+            cache_dir=cache_dir,
             cache_ttl_seconds=args.cache_ttl_seconds,
             min_fetch_interval_seconds=args.min_fetch_interval_seconds,
-            prefer_cache=args.prefer_cache,
+            prefer_cache=metar_prefer_cache,
         )
+
+        airport_wrapped = cache.get_stale(f"airport_{args.icao.strip().upper()}")
+        airport_prefer_cache = args.prefer_cache or is_airport_payload_current(airport_wrapped, now=now)
         airport, airport_source = get_airport(
             args.icao,
-            cache_dir=Path(args.cache_dir),
+            cache_dir=cache_dir,
             cache_ttl_seconds=args.cache_ttl_seconds,
             min_fetch_interval_seconds=args.min_fetch_interval_seconds,
-            prefer_cache=args.prefer_cache,
+            prefer_cache=airport_prefer_cache,
         )
+
         taf = None
         taf_source = None
         if args.include_taf:
+            taf_wrapped = cache.get_stale(f"taf_{args.icao.strip().upper()}")
+            taf_prefer_cache = args.prefer_cache or (
+                isinstance(taf_wrapped, dict)
+                and isinstance(taf_wrapped.get("payload"), dict)
+                and is_taf_payload_current(taf_wrapped["payload"], now=now)
+            )
             taf, taf_source = get_latest_taf(
                 args.icao,
-                cache_dir=Path(args.cache_dir),
+                cache_dir=cache_dir,
                 cache_ttl_seconds=args.cache_ttl_seconds,
                 min_fetch_interval_seconds=args.min_fetch_interval_seconds,
-                prefer_cache=args.prefer_cache,
+                prefer_cache=taf_prefer_cache,
             )
 
         runway_components = compute_runway_wind_components(metar, airport)
