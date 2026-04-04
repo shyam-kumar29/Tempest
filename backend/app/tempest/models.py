@@ -120,3 +120,33 @@ class AirportRecord:
             "runways": [runway.to_dict() for runway in self.runways],
             "source_payload": self.source_payload,
         }
+
+
+@dataclass(slots=True)
+class EvaluationResult:
+    profile_id: str
+    airport_id: str
+    decision: str
+    fail_reasons: list[str] = field(default_factory=list)
+    caution_reasons: list[str] = field(default_factory=list)
+    pass_reasons: list[str] = field(default_factory=list)
+    unknowns: list[str] = field(default_factory=list)
+    metar_summary: dict[str, Any] = field(default_factory=dict)
+    taf_summary: dict[str, Any] | None = None
+    airport_summary: dict[str, Any] | None = None
+    best_runway: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "profile_id": self.profile_id,
+            "airport_id": self.airport_id,
+            "decision": self.decision,
+            "fail_reasons": self.fail_reasons,
+            "caution_reasons": self.caution_reasons,
+            "pass_reasons": self.pass_reasons,
+            "unknowns": self.unknowns,
+            "metar_summary": self.metar_summary,
+            "taf_summary": self.taf_summary,
+            "airport_summary": self.airport_summary,
+            "best_runway": self.best_runway,
+        }
