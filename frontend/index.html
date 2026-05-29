@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tempest</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Tempest</p>
+          <h1>Go / no-go weather check</h1>
+        </div>
+        <div id="apiStatus" class="status">Checking API</div>
+      </section>
+
+      <section class="grid">
+        <form id="minimumsForm" class="panel">
+          <div class="panel-head">
+            <h2>Personal Minimums</h2>
+            <select id="profileSelect" aria-label="Profile"></select>
+          </div>
+
+          <label>
+            Profile ID
+            <input id="profileId" name="profile_id" required placeholder="primary" />
+          </label>
+          <label>
+            Display Name
+            <input id="displayName" name="display_name" required placeholder="Primary Profile" />
+          </label>
+
+          <div class="field-grid">
+            <label>Min Ceiling (ft)<input name="min_ceiling_ft_agl" type="number" min="0" /></label>
+            <label>Min Visibility (SM)<input name="min_visibility_sm" type="number" min="0" step="0.1" /></label>
+            <label>Max Wind (kt)<input name="max_surface_wind_kt" type="number" min="0" /></label>
+            <label>Max Gust (kt)<input name="max_gust_kt" type="number" min="0" /></label>
+            <label>Max Crosswind (kt)<input name="max_crosswind_kt" type="number" min="0" /></label>
+            <label>Max Tailwind (kt)<input name="max_tailwind_kt" type="number" min="0" /></label>
+            <label>Min Runway Length (ft)<input name="min_runway_length_ft" type="number" min="0" /></label>
+            <label>Min Runway Width (ft)<input name="min_runway_width_ft" type="number" min="0" /></label>
+            <label>Fuel Reserve Day (min)<input name="min_fuel_reserve_day_min" type="number" min="0" /></label>
+            <label>Fuel Reserve Night (min)<input name="min_fuel_reserve_night_min" type="number" min="0" /></label>
+            <label>Max Density Altitude (ft)<input name="max_density_altitude_ft" type="number" min="0" /></label>
+          </div>
+
+          <label>
+            Allowed Runway Surfaces
+            <input name="allowed_runway_surfaces" placeholder="asphalt, concrete" />
+          </label>
+
+          <div class="toggles">
+            <label><input name="allow_ifr" type="checkbox" /> Allow IFR</label>
+            <label><input name="allow_night" type="checkbox" /> Allow Night</label>
+            <label><input name="require_dry_runway" type="checkbox" /> Require Dry Runway</label>
+          </div>
+
+          <button type="submit">Save Minimums</button>
+        </form>
+
+        <section class="panel evaluate-panel">
+          <h2>Flight Check</h2>
+          <label>
+            Airport ICAO
+            <input id="icao" maxlength="4" placeholder="KLAF" />
+          </label>
+          <label>
+            Planned Departure
+            <input id="plannedDeparture" type="datetime-local" />
+          </label>
+          <label>
+            Fuel Reserve (min)
+            <input id="fuelReserve" type="number" min="0" />
+          </label>
+          <label>
+            TAF Lookahead (hours)
+            <input id="tafLookahead" type="number" min="1" step="0.5" value="3" />
+          </label>
+          <label class="inline">
+            <input id="includeTaf" type="checkbox" checked />
+            Include TAF
+          </label>
+          <button id="evaluateButton" type="button">Evaluate</button>
+        </section>
+      </section>
+
+      <section id="result" class="result panel hidden"></section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

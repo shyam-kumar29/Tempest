@@ -19,9 +19,31 @@ Fuel reserve is evaluated when the app supplies current usable reserve in minute
 ## Project layout
 
 - `backend/app/tempest`: core Python modules
+- `backend/app/tempest_api`: FastAPI app layer
 - `backend/scripts/fetch_metar.py`: CLI entrypoint
+- `frontend`: static V1 app
 - `backend/tests`: unit tests
 - `data/cache`: local API cache files
+
+## Run the V1 app
+
+Install web dependencies in your virtual environment:
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+```
+
+Start the app:
+
+```bash
+PYTHONPATH=backend/app uvicorn tempest_api.app:app --reload
+```
+
+Open:
+
+```text
+http://127.0.0.1:8000
+```
 
 ## Run METAR fetch
 
@@ -69,6 +91,8 @@ When `--include-runway-wind` is set, output includes `runway_wind_components`.
 ```bash
 pytest -q backend/tests
 ```
+
+API tests require the optional web dependencies in `requirements-dev.txt`.
 
 ## Manage personal minimums
 
