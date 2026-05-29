@@ -14,7 +14,7 @@ Pure Python backend foundation for aviation weather workflows.
 - Cache responses locally to reduce API calls
 - Expose a CLI command for station lookup
 
-Density altitude and fuel-planning checks are still stored as profile data, but they are not fully computed yet in the evaluation engine.
+Fuel reserve is evaluated when the app supplies current usable reserve in minutes. Destination suggestions and aircraft performance/range ranking are future work.
 
 ## Project layout
 
@@ -104,7 +104,11 @@ python3 backend/scripts/manage_minimums.py list
 Evaluate one saved profile against the current airport weather:
 
 ```bash
-python3 backend/scripts/evaluate_flight.py KLAF primary --include-taf
+python3 backend/scripts/evaluate_flight.py KLAF primary \
+  --include-taf \
+  --planned-departure 2026-04-04T18:30:00Z \
+  --taf-lookahead-hours 3 \
+  --fuel-reserve-min 60
 ```
 
 By default, evaluation checks the live API first so the weather data is as current as possible. Cached data is only used as a fallback if the live fetch fails. Use `--prefer-cache` only if you explicitly want to trust fresh cache entries first.
@@ -124,5 +128,8 @@ The evaluator currently checks:
 - IFR/night restrictions
 - runway length, width, and surface suitability
 - crosswind and tailwind against the best available runway
+- forecast ceiling, visibility, wind, and gusts in matching TAF periods
+- density altitude when temperature, altimeter, and airport elevation are available
+- fuel reserve when the current reserve is supplied
 
 The result is explainable JSON with `decision`, `fail_reasons`, `caution_reasons`, `pass_reasons`, and `unknowns`.

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .minimums import MinimumsProfile
@@ -117,6 +117,104 @@ def _pick_best_runway(runway_wind_components: list[dict[str, Any]]) -> dict[str,
     return max(runway_wind_components, key=lambda item: item.get("headwind_kt", float("-inf")))
 
 
+def _as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip().upper().replace("P", "").replace("+", "")
+        if cleaned in {"", "M"}:
+            return None
+        value = cleaned
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_int(value: Any) -> int | None:
+    number = _as_float(value)
+    if number is None:
+        return None
+    return int(number)
+
+
+def _taf_period_bounds(period: dict[str, Any]) -> tuple[datetime | None, datetime | None]:
+    start = parse_aviation_time(
+        period.get("timeFrom")
+        or period.get("validTimeFrom")
+        or period.get("valid_from")
+        or period.get("from")
+    )
+    end = parse_aviation_time(
+        period.get("timeTo")
+        or period.get("validTimeTo")
+        or period.get("valid_to")
+        or period.get("to")
+    )
+    return start, end
+
+
+def _period_overlaps(
+    period_start: datetime | None,
+    period_end: datetime | None,
+    window_start: datetime,
+    window_end: datetime,
+) -> bool:
+    if period_start is None or period_end is None:
+        return False
+    start = period_start.astimezone(UTC)
+    end = period_end.astimezone(UTC)
+    return start <= window_end and end >= window_start
+
+
+def _ceiling_from_clouds(clouds: Any) -> int | None:
+    if not isinstance(clouds, list):
+        return None
+    ceilings: list[int] = []
+    for layer in clouds:
+        if not isinstance(layer, dict):
+            continue
+        cover = str(layer.get("cover", "")).upper()
+        base = layer.get("base")
+        if cover in {"BKN", "OVC", "VV"} and isinstance(base, (int, float)):
+            ceilings.append(int(base))
+    if not ceilings:
+        return None
+    return min(ceilings)
+
+
+def _taf_period_summary(period: dict[str, Any]) -> dict[str, Any]:
+    start, end = _taf_period_bounds(period)
+    return {
+        "from": None if start is None else start.isoformat(),
+        "to": None if end is None else end.isoformat(),
+        "visibility_sm": _as_float(period.get("visib") or period.get("visibility")),
+        "ceiling_ft_agl": _ceiling_from_clouds(period.get("clouds") or period.get("sky_condition")),
+        "wind_speed_kt": _as_int(period.get("wspd") or period.get("wind_speed_kt")),
+        "wind_gust_kt": _as_int(period.get("wgst") or period.get("wind_gust_kt")),
+        "raw": period,
+    }
+
+
+def _density_altitude_ft(metar: MetarRecord, airport: AirportRecord | None) -> int | None:
+    if metar.temperature_c is None or metar.altimeter_in_hg is None:
+        return None
+
+    elevation_ft: float | None = None
+    if airport is not None and airport.elevation_ft is not None:
+        elevation_ft = float(airport.elevation_ft)
+    elif metar.elevation_m is not None:
+        elevation_ft = metar.elevation_m * 3.28084
+
+    if elevation_ft is None:
+        return None
+
+    pressure_altitude = elevation_ft + ((29.92 - metar.altimeter_in_hg) * 1000.0)
+    isa_temp_c = 15.0 - (2.0 * (elevation_ft / 1000.0))
+    density_altitude = pressure_altitude + (120.0 * (metar.temperature_c - isa_temp_c))
+    return round(density_altitude)
+
+
 def evaluate_conditions(
     *,
     profile: MinimumsProfile,
@@ -124,6 +222,9 @@ def evaluate_conditions(
     taf: TafRecord | None = None,
     airport: AirportRecord | None = None,
     runway_wind_components: list[dict[str, Any]] | None = None,
+    planned_departure: str | int | datetime | None = None,
+    taf_lookahead_hours: float = 3.0,
+    fuel_reserve_min: int | None = None,
 ) -> EvaluationResult:
     """Compare the current station conditions to one minimums profile."""
 
@@ -135,13 +236,24 @@ def evaluate_conditions(
     unknowns: list[str] = []
 
     observed_at = parse_aviation_time(metar.observed_at)
+    planned_at = (
+        planned_departure
+        if isinstance(planned_departure, datetime)
+        else parse_aviation_time(planned_departure)
+    )
+    if planned_at is None:
+        planned_at = datetime.now(UTC)
+    planned_at = planned_at.astimezone(UTC)
+    taf_window_end = planned_at + timedelta(hours=taf_lookahead_hours)
+
     is_night = _is_night(
-        observed_at,
+        planned_at,
         latitude=metar.latitude if metar.latitude is not None else (airport.latitude if airport else None),
         longitude=metar.longitude if metar.longitude is not None else (airport.longitude if airport else None),
     )
     ceiling_ft = _lowest_ceiling_ft(metar)
     best_runway = _pick_best_runway(runway_wind_components or [])
+    density_altitude_ft = _density_altitude_ft(metar, airport)
 
     if profile.min_visibility_sm is not None:
         if metar.visibility_sm is None:
@@ -287,26 +399,88 @@ def evaluate_conditions(
             "Dry-runway minimum is set, but runway surface condition is not currently evaluated from airport weather data."
         )
 
+    fuel_requirements: list[tuple[str, int]] = []
     if profile.min_fuel_reserve_min is not None:
-        caution_reasons.append(
-            f"Fuel reserve minimum {profile.min_fuel_reserve_min} min is stored, but fuel planning is not yet evaluated."
-        )
-    if profile.min_fuel_reserve_day_min is not None:
-        caution_reasons.append(
-            f"Day fuel reserve minimum {profile.min_fuel_reserve_day_min} min is stored, but fuel planning is not yet evaluated."
-        )
-    if profile.min_fuel_reserve_night_min is not None:
-        caution_reasons.append(
-            f"Night fuel reserve minimum {profile.min_fuel_reserve_night_min} min is stored, but fuel planning is not yet evaluated."
-        )
+        fuel_requirements.append(("fuel reserve", profile.min_fuel_reserve_min))
+    if is_night is True and profile.min_fuel_reserve_night_min is not None:
+        fuel_requirements.append(("night fuel reserve", profile.min_fuel_reserve_night_min))
+    if is_night is False and profile.min_fuel_reserve_day_min is not None:
+        fuel_requirements.append(("day fuel reserve", profile.min_fuel_reserve_day_min))
+    if fuel_requirements:
+        if fuel_reserve_min is None:
+            unknowns.append("Fuel reserve minimum is set, but current fuel reserve was not provided.")
+        else:
+            for label, required in fuel_requirements:
+                if fuel_reserve_min < required:
+                    fail_reasons.append(
+                        f"Current fuel reserve {fuel_reserve_min} min is below {label} minimum {required} min."
+                    )
+                else:
+                    pass_reasons.append(
+                        f"Current fuel reserve {fuel_reserve_min} min meets {label} minimum {required} min."
+                    )
+
     if profile.max_density_altitude_ft is not None:
-        caution_reasons.append(
-            f"Density altitude limit {profile.max_density_altitude_ft} ft is stored, but density altitude is not yet computed."
+        if density_altitude_ft is None:
+            unknowns.append("Density altitude limit is set, but density altitude could not be computed.")
+        elif density_altitude_ft > profile.max_density_altitude_ft:
+            fail_reasons.append(
+                f"Density altitude {density_altitude_ft} ft exceeds limit {profile.max_density_altitude_ft} ft."
+            )
+        else:
+            pass_reasons.append(
+                f"Density altitude {density_altitude_ft} ft is within limit {profile.max_density_altitude_ft} ft."
+            )
+
+    relevant_taf_periods: list[dict[str, Any]] = []
+    if taf is not None:
+        for period in taf.forecast:
+            if not isinstance(period, dict):
+                continue
+            period_start, period_end = _taf_period_bounds(period)
+            if _period_overlaps(period_start, period_end, planned_at, taf_window_end):
+                relevant_taf_periods.append(_taf_period_summary(period))
+
+    if taf is not None and not relevant_taf_periods:
+        unknowns.append("TAF was provided, but no forecast period matched the planned evaluation window.")
+
+    for period in relevant_taf_periods:
+        label = f"TAF period {period['from']} to {period['to']}"
+        if profile.min_visibility_sm is not None and period["visibility_sm"] is not None:
+            if period["visibility_sm"] < profile.min_visibility_sm:
+                fail_reasons.append(
+                    f"{label} forecasts visibility {period['visibility_sm']:.1f} SM below minimum {profile.min_visibility_sm:.1f} SM."
+                )
+        if profile.min_ceiling_ft_agl is not None and period["ceiling_ft_agl"] is not None:
+            if period["ceiling_ft_agl"] < profile.min_ceiling_ft_agl:
+                fail_reasons.append(
+                    f"{label} forecasts ceiling {period['ceiling_ft_agl']} ft below minimum {profile.min_ceiling_ft_agl} ft."
+                )
+        if profile.max_surface_wind_kt is not None and period["wind_speed_kt"] is not None:
+            if period["wind_speed_kt"] > profile.max_surface_wind_kt:
+                fail_reasons.append(
+                    f"{label} forecasts wind {period['wind_speed_kt']} kt above limit {profile.max_surface_wind_kt} kt."
+                )
+        if profile.max_gust_kt is not None and period["wind_gust_kt"] is not None:
+            if period["wind_gust_kt"] > profile.max_gust_kt:
+                fail_reasons.append(
+                    f"{label} forecasts gust {period['wind_gust_kt']} kt above limit {profile.max_gust_kt} kt."
+                )
+
+    if relevant_taf_periods:
+        pass_reasons.append(
+            f"Evaluated {len(relevant_taf_periods)} TAF forecast period(s) for the planned window."
         )
-    if profile.require_alternate_for_ifr is True and taf is None:
-        caution_reasons.append(
-            "IFR alternate requirement is set, but no TAF was provided to evaluate alternate planning."
-        )
+
+    if profile.require_alternate_for_ifr is True:
+        if taf is None:
+            caution_reasons.append(
+                "IFR alternate requirement is set, but no TAF was provided to evaluate alternate planning."
+            )
+        else:
+            caution_reasons.append(
+                "IFR alternate requirement is set; destination TAF was checked, but alternate airport selection is not implemented yet."
+            )
 
     decision = "go"
     if fail_reasons:
@@ -323,7 +497,10 @@ def evaluate_conditions(
         "wind_gust_kt": metar.wind_gust_kt,
         "observed_at": metar.observed_at,
         "observed_at_local": to_local_time_string(metar.observed_at),
+        "planned_departure": planned_at.isoformat(),
+        "planned_departure_local": planned_at.astimezone().isoformat(),
         "is_night": is_night,
+        "density_altitude_ft": density_altitude_ft,
     }
     taf_summary = (
         None
@@ -336,6 +513,9 @@ def evaluate_conditions(
             "valid_from_local": to_local_time_string(taf.valid_from),
             "valid_to": taf.valid_to,
             "valid_to_local": to_local_time_string(taf.valid_to),
+            "evaluation_window_end": taf_window_end.isoformat(),
+            "evaluation_window_end_local": taf_window_end.astimezone().isoformat(),
+            "evaluated_periods": relevant_taf_periods,
         }
     )
     airport_summary = None

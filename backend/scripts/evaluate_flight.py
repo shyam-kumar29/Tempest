@@ -50,6 +50,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use fresh cache first instead of checking the live API first",
     )
     parser.add_argument("--include-taf", action="store_true")
+    parser.add_argument(
+        "--planned-departure",
+        help="Planned departure time in ISO format. Defaults to current UTC time.",
+    )
+    parser.add_argument(
+        "--taf-lookahead-hours",
+        type=float,
+        default=3.0,
+        help="TAF evaluation window length from planned departure (default: 3)",
+    )
+    parser.add_argument(
+        "--fuel-reserve-min",
+        type=int,
+        help="Current usable fuel reserve in minutes, if known",
+    )
     return parser
 
 
@@ -117,6 +132,9 @@ def main(argv: list[str] | None = None) -> int:
             taf=taf,
             airport=airport,
             runway_wind_components=runway_components,
+            planned_departure=args.planned_departure,
+            taf_lookahead_hours=args.taf_lookahead_hours,
+            fuel_reserve_min=args.fuel_reserve_min,
         )
 
         output = {
