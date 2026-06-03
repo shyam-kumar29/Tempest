@@ -290,9 +290,7 @@ def evaluate(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         prefer_cache=bool(payload.get("prefer_cache", False)),
     )
 
-    taf_lookahead_hours = _optional_float(payload, "taf_lookahead_hours", 3.0) or 3.0
-    if taf_lookahead_hours <= 0:
-        raise HTTPException(status_code=422, detail="taf_lookahead_hours must be greater than 0")
+    taf_lookahead_hours = _optional_float(payload, "taf_lookahead_hours", 0.0) or 0.0
 
     result = evaluate_conditions(
         profile=profile,

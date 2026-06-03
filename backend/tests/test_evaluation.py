@@ -81,7 +81,7 @@ def test_evaluate_conditions_returns_go_when_conditions_meet_profile() -> None:
         metar=metar,
         airport=airport,
         runway_wind_components=compute_runway_wind_components(metar, airport),
-        planned_departure="2026-04-04T18:00:00Z",
+        planned_departure="2026-04-04T15:30:00Z",
     )
 
     assert result.decision == "go"
@@ -104,7 +104,7 @@ def test_evaluate_conditions_returns_no_go_for_low_visibility_and_crosswind() ->
         metar=metar,
         airport=airport,
         runway_wind_components=compute_runway_wind_components(metar, airport),
-        planned_departure="2026-04-04T18:00:00Z",
+        planned_departure="2026-04-04T15:30:00Z",
     )
 
     assert result.decision == "no-go"
@@ -126,7 +126,7 @@ def test_evaluate_conditions_returns_caution_for_missing_required_inputs() -> No
         metar=metar,
         airport=None,
         runway_wind_components=[],
-        planned_departure="2026-04-04T18:00:00Z",
+        planned_departure="2026-04-04T15:30:00Z",
     )
 
     assert result.decision == "caution"
@@ -195,7 +195,7 @@ def test_evaluate_conditions_uses_taf_periods_for_planned_window() -> None:
     )
 
     assert result.decision == "no-go"
-    assert any("TAF period" in reason for reason in result.fail_reasons)
+    assert any("TAF forecasts" in reason for reason in result.fail_reasons)
     assert result.taf_summary is not None
     assert len(result.taf_summary["evaluated_periods"]) == 1
 
@@ -236,6 +236,59 @@ def test_evaluate_conditions_parses_taf_plus_visibility() -> None:
     assert result.taf_summary["evaluated_periods"][0]["visibility_sm"] == 6.0
 
 
+def test_evaluate_conditions_ignores_metar_outside_departure_window_and_uses_taf() -> None:
+    profile = MinimumsProfile(
+        profile_id="primary",
+        display_name="Primary",
+        min_visibility_sm=5.0,
+    )
+    taf = TafRecord(
+        icao_id="KLAF",
+        raw_text="TAF KLAF 041720Z 0418/0518 22012KT P6SM BKN030",
+        issued_at="2026-04-04T17:20:00Z",
+        valid_from="2026-04-04T18:00:00Z",
+        valid_to="2026-04-05T18:00:00Z",
+        station_name=None,
+        forecast=[
+            {
+                "timeFrom": "2026-04-04T18:00:00Z",
+                "timeTo": "2026-04-04T21:00:00Z",
+                "visib": 10,
+                "clouds": [{"cover": "BKN", "base": 3000}],
+            }
+        ],
+        source_payload={},
+    )
+
+    result = evaluate_conditions(
+        profile=profile,
+        metar=_metar(visibility_sm=1.0, observed_at="2026-04-04T15:00:00Z"),
+        taf=taf,
+        planned_departure="2026-04-04T18:30:00Z",
+    )
+
+    assert result.decision == "go"
+    assert not result.fail_reasons
+    assert any("TAF visibility" in reason for reason in result.pass_reasons)
+
+
+def test_evaluate_conditions_uses_metar_inside_departure_window() -> None:
+    profile = MinimumsProfile(
+        profile_id="primary",
+        display_name="Primary",
+        min_visibility_sm=5.0,
+    )
+
+    result = evaluate_conditions(
+        profile=profile,
+        metar=_metar(visibility_sm=1.0, observed_at="2026-04-04T18:00:00Z"),
+        planned_departure="2026-04-04T18:30:00Z",
+    )
+
+    assert result.decision == "no-go"
+    assert any("Visibility" in reason for reason in result.fail_reasons)
+
+
 def test_evaluate_conditions_checks_density_altitude() -> None:
     profile = MinimumsProfile(
         profile_id="primary",
@@ -249,7 +302,7 @@ def test_evaluate_conditions_checks_density_altitude() -> None:
         profile=profile,
         metar=metar,
         airport=airport,
-        planned_departure="2026-04-04T18:00:00Z",
+        planned_departure="2026-04-04T15:30:00Z",
     )
 
     assert result.decision == "no-go"
@@ -266,7 +319,7 @@ def test_evaluate_conditions_checks_fuel_reserve_when_provided() -> None:
     result = evaluate_conditions(
         profile=profile,
         metar=_metar(),
-        planned_departure="2026-04-04T18:00:00Z",
+        planned_departure="2026-04-04T15:30:00Z",
         fuel_reserve_min=30,
     )
 
@@ -285,7 +338,7 @@ def test_evaluate_conditions_treats_clear_sky_as_passing_ceiling() -> None:
     result = evaluate_conditions(
         profile=profile,
         metar=metar,
-        planned_departure="2026-04-04T18:00:00Z",
+        planned_departure="2026-04-04T15:30:00Z",
     )
 
     assert result.decision == "go"
@@ -303,7 +356,7 @@ def test_evaluate_conditions_treats_missing_gust_as_no_gust() -> None:
     result = evaluate_conditions(
         profile=profile,
         metar=_metar(wind_gust_kt=None),
-        planned_departure="2026-04-04T18:00:00Z",
+        planned_departure="2026-04-04T15:30:00Z",
     )
 
     assert result.decision == "go"
@@ -332,7 +385,7 @@ def test_evaluate_conditions_matches_hard_surface_for_paved_runway_minimums() ->
         profile=profile,
         metar=_metar(),
         airport=airport,
-        planned_departure="2026-04-04T18:00:00Z",
+        planned_departure="2026-04-04T15:30:00Z",
     )
 
     assert result.decision == "go"
@@ -360,7 +413,7 @@ def test_evaluate_conditions_marks_missing_runway_surface_unknown_not_no_go() ->
         profile=profile,
         metar=_metar(),
         airport=airport,
-        planned_departure="2026-04-04T18:00:00Z",
+        planned_departure="2026-04-04T15:30:00Z",
     )
 
     assert result.decision == "caution"

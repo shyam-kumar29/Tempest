@@ -88,7 +88,8 @@ h3 {
 }
 
 .top-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 42px;
   align-items: center;
   gap: 10px;
   flex: 0 0 auto;
@@ -188,7 +189,8 @@ button:focus {
 }
 
 button {
-  width: fit-content;
+  width: auto;
+  justify-self: start;
   border: 0;
   border-radius: 7px;
   background: var(--ink);
@@ -203,13 +205,20 @@ button:hover {
 }
 
 .compact-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: auto;
-  min-width: 170px;
+  min-width: 0;
   background: var(--blue);
+  white-space: nowrap;
 }
 
 .status {
-  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  max-width: 220px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.74);
@@ -223,8 +232,10 @@ button:hover {
   display: inline-grid;
   place-items: center;
   width: 42px;
+  max-width: 42px;
   height: 42px;
   min-width: 42px;
+  flex: 0 0 42px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: #fff;
@@ -298,6 +309,10 @@ button:hover {
   justify-content: flex-end;
   background: rgba(18, 28, 24, 0.34);
   backdrop-filter: blur(3px);
+}
+
+.settings-overlay.hidden {
+  display: none;
 }
 
 .settings-panel {
@@ -451,7 +466,7 @@ pre {
 
   .compact-button,
   .minimums-form button[type="submit"] {
-    width: fit-content;
+    width: auto;
   }
 
   .source-row {
@@ -461,5 +476,6 @@ pre {
   .top-actions {
     align-self: stretch;
     justify-content: space-between;
+    grid-template-columns: auto 42px;
   }
 }

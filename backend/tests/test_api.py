@@ -159,7 +159,14 @@ def test_evaluate_endpoint_returns_no_go(client, monkeypatch):
         },
     )
 
-    response = client.post("/evaluate", json={"icao": "KLAF", "profile_id": "primary"})
+    response = client.post(
+        "/evaluate",
+        json={
+            "icao": "KLAF",
+            "profile_id": "primary",
+            "planned_departure": "2026-04-04T18:30:00Z",
+        },
+    )
     assert response.status_code == 200
     assert response.json()["decision"]["decision"] == "no-go"
 

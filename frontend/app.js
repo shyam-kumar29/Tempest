@@ -59,10 +59,12 @@ function setStatus(text) {
 
 function openSettings() {
   $("settingsOverlay").classList.remove("hidden");
+  $("settingsOverlay").dataset.open = "true";
 }
 
 function closeSettings() {
   $("settingsOverlay").classList.add("hidden");
+  delete $("settingsOverlay").dataset.open;
 }
 
 function profilePayload() {
@@ -300,9 +302,7 @@ async function evaluateFlight() {
         icao,
         profile_id: selectedProfileId,
         planned_departure: plannedDepartureIso(),
-        taf_lookahead_hours: numberOrNull($("tafLookahead").value) || 3,
-        fuel_reserve_min: numberOrNull($("fuelReserve").value),
-        include_taf: $("includeTaf").checked,
+        include_taf: true,
       }),
     });
     renderResult(data);

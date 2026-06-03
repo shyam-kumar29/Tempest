@@ -107,6 +107,22 @@ def _surface_matches(runway_surface: str | None, allowed_surfaces: list[str]) ->
     return False
 
 
+def _profile_needs_weather_source(profile: MinimumsProfile) -> bool:
+    return any(
+        value is not None
+        for value in (
+            profile.min_visibility_sm,
+            profile.min_ceiling_ft_agl,
+            profile.max_surface_wind_kt,
+            profile.max_gust_kt,
+            profile.max_crosswind_kt,
+            profile.max_tailwind_kt,
+            profile.allow_ifr,
+            profile.max_density_altitude_ft,
+        )
+    )
+
+
 def _is_night(
     observed_at: datetime | None,
     *,
@@ -138,6 +154,54 @@ def _pick_best_runway(runway_wind_components: list[dict[str, Any]]) -> dict[str,
     if not runway_wind_components:
         return None
     return max(runway_wind_components, key=lambda item: item.get("headwind_kt", float("-inf")))
+
+
+def _metar_covers_planned_departure(metar: MetarRecord, planned_at: datetime) -> bool:
+    observed_at = parse_aviation_time(metar.observed_at)
+    if observed_at is None:
+        return False
+    delta = planned_at.astimezone(UTC) - observed_at.astimezone(UTC)
+    return timedelta(0) <= delta <= timedelta(hours=1)
+
+
+def _normalize_angle(delta: float) -> float:
+    while delta > 180:
+        delta -= 360
+    while delta < -180:
+        delta += 360
+    return delta
+
+
+def _runway_components_for_wind(
+    *,
+    wind_direction_degrees: int | None,
+    wind_speed_kt: int | None,
+    airport: AirportRecord | None,
+) -> list[dict[str, Any]]:
+    if airport is None or wind_direction_degrees is None or wind_speed_kt is None:
+        return []
+
+    components: list[dict[str, Any]] = []
+    for runway in airport.runways:
+        if runway.heading_degrees is None:
+            continue
+        delta = _normalize_angle(wind_direction_degrees - runway.heading_degrees)
+        radians = math.radians(delta)
+        headwind = wind_speed_kt * math.cos(radians)
+        crosswind = wind_speed_kt * math.sin(radians)
+        components.append(
+            {
+                "runway_id": runway.runway_id,
+                "runway_heading_degrees": round(runway.heading_degrees, 1),
+                "wind_direction_degrees": wind_direction_degrees,
+                "wind_speed_kt": wind_speed_kt,
+                "headwind_kt": round(headwind, 1),
+                "tailwind_kt": round(max(0.0, -headwind), 1),
+                "crosswind_kt": round(abs(crosswind), 1),
+                "crosswind_from": "right" if crosswind > 0 else "left",
+            }
+        )
+    return components
 
 
 def _as_float(value: Any) -> float | None:
@@ -188,6 +252,17 @@ def _period_overlaps(
     start = period_start.astimezone(UTC)
     end = period_end.astimezone(UTC)
     return start <= window_end and end >= window_start
+
+
+def _period_contains(
+    period_start: datetime | None,
+    period_end: datetime | None,
+    instant: datetime,
+) -> bool:
+    if period_start is None or period_end is None:
+        return False
+    current = instant.astimezone(UTC)
+    return period_start.astimezone(UTC) <= current <= period_end.astimezone(UTC)
 
 
 def _ceiling_from_clouds(clouds: Any) -> int | None:
@@ -246,7 +321,7 @@ def evaluate_conditions(
     airport: AirportRecord | None = None,
     runway_wind_components: list[dict[str, Any]] | None = None,
     planned_departure: str | int | datetime | None = None,
-    taf_lookahead_hours: float = 3.0,
+    taf_lookahead_hours: float = 0.0,
     fuel_reserve_min: int | None = None,
 ) -> EvaluationResult:
     """Compare the current station conditions to one minimums profile."""
@@ -266,7 +341,8 @@ def evaluate_conditions(
     if planned_at is None:
         planned_at = datetime.now(UTC)
     planned_at = planned_at.astimezone(UTC)
-    taf_window_end = planned_at + timedelta(hours=taf_lookahead_hours)
+    taf_window_end = planned_at + timedelta(hours=max(0.0, taf_lookahead_hours))
+    metar_applies = _metar_covers_planned_departure(metar, planned_at)
 
     is_night = _is_night(
         planned_at,
@@ -275,10 +351,43 @@ def evaluate_conditions(
     )
     ceiling_ft = _lowest_ceiling_ft(metar)
     clear_sky = _has_clear_sky_report(metar)
-    best_runway = _pick_best_runway(runway_wind_components or [])
     density_altitude_ft = _density_altitude_ft(metar, airport)
 
-    if profile.min_visibility_sm is not None:
+    relevant_taf_periods: list[dict[str, Any]] = []
+    if taf is not None:
+        for period in taf.forecast:
+            if not isinstance(period, dict):
+                continue
+            period_start, period_end = _taf_period_bounds(period)
+            if taf_lookahead_hours > 0:
+                matches_period = _period_overlaps(period_start, period_end, planned_at, taf_window_end)
+            else:
+                matches_period = _period_contains(period_start, period_end, planned_at)
+            if matches_period:
+                relevant_taf_periods.append(_taf_period_summary(period))
+
+    weather_source = "metar" if metar_applies else "taf"
+    selected_taf_period = relevant_taf_periods[0] if relevant_taf_periods else None
+    selected_runway_components = (
+        runway_wind_components or []
+        if metar_applies
+        else _runway_components_for_wind(
+            wind_direction_degrees=(
+                None if selected_taf_period is None else _as_int(selected_taf_period["raw"].get("wdir"))
+            ),
+            wind_speed_kt=None if selected_taf_period is None else selected_taf_period["wind_speed_kt"],
+            airport=airport,
+        )
+    )
+    best_runway = _pick_best_runway(selected_runway_components)
+
+    needs_weather_source = _profile_needs_weather_source(profile)
+    if not metar_applies and selected_taf_period is None and needs_weather_source:
+        unknowns.append(
+            "Planned departure is outside the current METAR window, and no TAF period covers the planned departure."
+        )
+
+    if profile.min_visibility_sm is not None and metar_applies:
         if metar.visibility_sm is None:
             unknowns.append("Visibility minimum is set, but METAR visibility is unavailable.")
         elif metar.visibility_sm < profile.min_visibility_sm:
@@ -289,8 +398,20 @@ def evaluate_conditions(
             pass_reasons.append(
                 f"Visibility {metar.visibility_sm:.1f} SM meets minimum {profile.min_visibility_sm:.1f} SM."
             )
+    elif profile.min_visibility_sm is not None and selected_taf_period is not None:
+        visibility_sm = selected_taf_period["visibility_sm"]
+        if visibility_sm is None:
+            unknowns.append("Visibility minimum is set, but TAF visibility is unavailable for the planned departure.")
+        elif visibility_sm < profile.min_visibility_sm:
+            fail_reasons.append(
+                f"TAF forecasts visibility {visibility_sm:.1f} SM below minimum {profile.min_visibility_sm:.1f} SM at planned departure."
+            )
+        else:
+            pass_reasons.append(
+                f"TAF visibility {visibility_sm:.1f} SM meets minimum {profile.min_visibility_sm:.1f} SM at planned departure."
+            )
 
-    if profile.min_ceiling_ft_agl is not None:
+    if profile.min_ceiling_ft_agl is not None and metar_applies:
         if ceiling_ft is None and clear_sky:
             pass_reasons.append("No ceiling is reported in the current METAR.")
         elif ceiling_ft is None:
@@ -303,8 +424,27 @@ def evaluate_conditions(
             pass_reasons.append(
                 f"Ceiling {ceiling_ft} ft meets minimum {profile.min_ceiling_ft_agl} ft."
             )
+    elif profile.min_ceiling_ft_agl is not None and selected_taf_period is not None:
+        taf_ceiling_ft = selected_taf_period["ceiling_ft_agl"]
+        taf_clouds = selected_taf_period["raw"].get("clouds") or selected_taf_period["raw"].get("sky_condition")
+        taf_clear = (
+            isinstance(taf_clouds, list)
+            and any(str(layer.get("cover", "")).upper() in {"CLR", "SKC", "NSC", "NCD"} for layer in taf_clouds if isinstance(layer, dict))
+        )
+        if taf_ceiling_ft is None and taf_clear:
+            pass_reasons.append("TAF reports no ceiling at planned departure.")
+        elif taf_ceiling_ft is None:
+            unknowns.append("Ceiling minimum is set, but TAF ceiling is unavailable for the planned departure.")
+        elif taf_ceiling_ft < profile.min_ceiling_ft_agl:
+            fail_reasons.append(
+                f"TAF forecasts ceiling {taf_ceiling_ft} ft below minimum {profile.min_ceiling_ft_agl} ft at planned departure."
+            )
+        else:
+            pass_reasons.append(
+                f"TAF ceiling {taf_ceiling_ft} ft meets minimum {profile.min_ceiling_ft_agl} ft at planned departure."
+            )
 
-    if profile.max_surface_wind_kt is not None:
+    if profile.max_surface_wind_kt is not None and metar_applies:
         if metar.wind_speed_kt is None:
             unknowns.append("Surface wind limit is set, but METAR wind speed is unavailable.")
         elif metar.wind_speed_kt > profile.max_surface_wind_kt:
@@ -315,8 +455,20 @@ def evaluate_conditions(
             pass_reasons.append(
                 f"Surface wind {metar.wind_speed_kt} kt is within limit {profile.max_surface_wind_kt} kt."
             )
+    elif profile.max_surface_wind_kt is not None and selected_taf_period is not None:
+        wind_speed_kt = selected_taf_period["wind_speed_kt"]
+        if wind_speed_kt is None:
+            unknowns.append("Surface wind limit is set, but TAF wind speed is unavailable for the planned departure.")
+        elif wind_speed_kt > profile.max_surface_wind_kt:
+            fail_reasons.append(
+                f"TAF forecasts wind {wind_speed_kt} kt above limit {profile.max_surface_wind_kt} kt at planned departure."
+            )
+        else:
+            pass_reasons.append(
+                f"TAF wind {wind_speed_kt} kt is within limit {profile.max_surface_wind_kt} kt at planned departure."
+            )
 
-    if profile.max_gust_kt is not None:
+    if profile.max_gust_kt is not None and metar_applies:
         if metar.wind_gust_kt is None:
             pass_reasons.append("No gust is reported in the current METAR.")
         elif metar.wind_gust_kt > profile.max_gust_kt:
@@ -326,6 +478,18 @@ def evaluate_conditions(
         else:
             pass_reasons.append(
                 f"Gust {metar.wind_gust_kt} kt is within limit {profile.max_gust_kt} kt."
+            )
+    elif profile.max_gust_kt is not None and selected_taf_period is not None:
+        gust_kt = selected_taf_period["wind_gust_kt"]
+        if gust_kt is None:
+            pass_reasons.append("TAF reports no gust at planned departure.")
+        elif gust_kt > profile.max_gust_kt:
+            fail_reasons.append(
+                f"TAF forecasts gust {gust_kt} kt above limit {profile.max_gust_kt} kt at planned departure."
+            )
+        else:
+            pass_reasons.append(
+                f"TAF gust {gust_kt} kt is within limit {profile.max_gust_kt} kt at planned departure."
             )
 
     if profile.allow_night is False:
@@ -402,7 +566,7 @@ def evaluate_conditions(
 
     if profile.max_crosswind_kt is not None:
         if best_runway is None:
-            unknowns.append("Crosswind limit is set, but runway wind components are unavailable.")
+            unknowns.append(f"Crosswind limit is set, but {weather_source.upper()} runway wind components are unavailable.")
         elif float(best_runway["crosswind_kt"]) > profile.max_crosswind_kt:
             fail_reasons.append(
                 f"Best available runway crosswind {best_runway['crosswind_kt']} kt exceeds limit {profile.max_crosswind_kt} kt."
@@ -414,7 +578,7 @@ def evaluate_conditions(
 
     if profile.max_tailwind_kt is not None:
         if best_runway is None:
-            unknowns.append("Tailwind limit is set, but runway wind components are unavailable.")
+            unknowns.append(f"Tailwind limit is set, but {weather_source.upper()} runway wind components are unavailable.")
         elif float(best_runway["tailwind_kt"]) > profile.max_tailwind_kt:
             fail_reasons.append(
                 f"Best available runway tailwind {best_runway['tailwind_kt']} kt exceeds limit {profile.max_tailwind_kt} kt."
@@ -438,7 +602,7 @@ def evaluate_conditions(
         fuel_requirements.append(("day fuel reserve", profile.min_fuel_reserve_day_min))
     if fuel_requirements:
         if fuel_reserve_min is None:
-            unknowns.append("Fuel reserve minimum is set, but current fuel reserve was not provided.")
+            pass_reasons.append("Fuel reserve minimum is saved in the profile; no current fuel value was provided for this check.")
         else:
             for label, required in fuel_requirements:
                 if fuel_reserve_min < required:
@@ -462,19 +626,10 @@ def evaluate_conditions(
                 f"Density altitude {density_altitude_ft} ft is within limit {profile.max_density_altitude_ft} ft."
             )
 
-    relevant_taf_periods: list[dict[str, Any]] = []
-    if taf is not None:
-        for period in taf.forecast:
-            if not isinstance(period, dict):
-                continue
-            period_start, period_end = _taf_period_bounds(period)
-            if _period_overlaps(period_start, period_end, planned_at, taf_window_end):
-                relevant_taf_periods.append(_taf_period_summary(period))
-
-    if taf is not None and not relevant_taf_periods:
+    if taf is not None and not relevant_taf_periods and not metar_applies and needs_weather_source:
         unknowns.append("TAF was provided, but no forecast period matched the planned evaluation window.")
 
-    for period in relevant_taf_periods:
+    for period in ([] if not metar_applies else relevant_taf_periods):
         label = f"TAF period {period['from']} to {period['to']}"
         if profile.min_visibility_sm is not None and period["visibility_sm"] is not None:
             if period["visibility_sm"] < profile.min_visibility_sm:
