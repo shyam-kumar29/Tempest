@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,56 @@ def _altimeter_to_inhg(payload: dict[str, Any]) -> float | None:
     return altim
 
 
+def _visibility_from_raw(raw_text: str) -> float | None:
+    tokens = raw_text.upper().split()
+    for index, token in enumerate(tokens):
+        if token.endswith("SM"):
+            value = token[:-2]
+            if not value:
+                continue
+            if value.startswith("P"):
+                value = value[1:]
+            if value.startswith("M"):
+                value = value[1:]
+
+            if "/" in value:
+                whole = 0.0
+                fraction = value
+                if index > 0 and re.fullmatch(r"\d+", tokens[index - 1]):
+                    whole = float(tokens[index - 1])
+                numerator, denominator = fraction.split("/", 1)
+                try:
+                    return whole + (float(numerator) / float(denominator))
+                except (TypeError, ValueError, ZeroDivisionError):
+                    continue
+
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _sky_cover_from_raw(raw_text: str) -> list[dict[str, Any]]:
+    layers: list[dict[str, Any]] = []
+    for token in raw_text.upper().split():
+        if token in {"CLR", "SKC", "NSC", "NCD"}:
+            layers.append({"cover": token, "base": None})
+            continue
+
+        match = re.fullmatch(r"(FEW|SCT|BKN|OVC|VV)(\d{3})(CB|TCU)?", token)
+        if match:
+            layers.append(
+                {
+                    "cover": match.group(1),
+                    "base": int(match.group(2)) * 100,
+                    **({"cloud_type": match.group(3)} if match.group(3) else {}),
+                }
+            )
+
+    return layers
+
+
 def normalize_metar(payload: dict[str, Any]) -> MetarRecord:
     icao_id = str(_pick(payload, "icaoId", "station_id", "station")).upper()
     raw_text = str(_pick(payload, "rawOb", "raw_text", "raw") or "")
@@ -73,6 +124,12 @@ def normalize_metar(payload: dict[str, Any]) -> MetarRecord:
     sky_cover = payload.get("clouds") or payload.get("sky_condition") or []
     if not isinstance(sky_cover, list):
         sky_cover = []
+    if not sky_cover:
+        sky_cover = _sky_cover_from_raw(raw_text)
+
+    visibility_sm = _as_float(_pick(payload, "visib", "visibility_statute_mi"))
+    if visibility_sm is None:
+        visibility_sm = _visibility_from_raw(raw_text)
 
     return MetarRecord(
         icao_id=icao_id,
@@ -86,7 +143,7 @@ def normalize_metar(payload: dict[str, Any]) -> MetarRecord:
         wind_direction_degrees=_as_int(_pick(payload, "wdir", "wind_dir_degrees")),
         wind_speed_kt=_as_int(_pick(payload, "wspd", "wind_speed_kt")),
         wind_gust_kt=_as_int(_pick(payload, "wgst", "wind_gust_kt")),
-        visibility_sm=_as_float(_pick(payload, "visib", "visibility_statute_mi")),
+        visibility_sm=visibility_sm,
         temperature_c=_as_float(_pick(payload, "temp", "temp_c")),
         dewpoint_c=_as_float(_pick(payload, "dewp", "dewpoint_c")),
         altimeter_in_hg=_altimeter_to_inhg(payload),

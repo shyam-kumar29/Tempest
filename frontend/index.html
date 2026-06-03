@@ -14,7 +14,10 @@
           <h1>Flight planning assistant</h1>
           <p class="lede">Check a planned flight against saved personal minimums, live METAR/TAF, and runway winds.</p>
         </div>
-        <div id="apiStatus" class="status">Checking API</div>
+        <div class="top-actions">
+          <div id="apiStatus" class="status">Checking API</div>
+          <button id="settingsButton" class="icon-button" type="button" aria-label="Open settings">&#9881;</button>
+        </div>
       </section>
 
       <section class="planner-grid">
@@ -54,27 +57,23 @@
             </label>
           </div>
         </section>
-
-        <aside class="panel profile-card">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Saved setup</p>
-              <h2>Personal Minimums</h2>
-            </div>
-            <button id="editMinimumsButton" class="secondary-button" type="button">Edit</button>
-          </div>
-          <div id="profileSummary" class="profile-summary">Loading profiles</div>
-        </aside>
       </section>
 
-      <details id="minimumsDetails" class="panel setup-panel">
-        <summary>
-          <span>
-            <span class="eyebrow">Setup</span>
-            <strong>Personal minimums editor</strong>
-          </span>
-          <span class="summary-hint">Open only when your limits change</span>
-        </summary>
+      <section id="result" class="result panel hidden"></section>
+    </main>
+
+    <div id="settingsOverlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <section class="settings-panel">
+        <div class="settings-head">
+          <div>
+            <p class="eyebrow">Settings</p>
+            <h2 id="settingsTitle">Personal Minimums</h2>
+            <p>Set these once, then use the flight check as the main workflow.</p>
+          </div>
+          <button id="closeSettingsButton" class="icon-button close-button" type="button" aria-label="Close settings">&times;</button>
+        </div>
+
+        <div id="profileSummary" class="profile-summary">Loading profiles</div>
 
         <form id="minimumsForm" class="minimums-form">
           <div class="identity-grid">
@@ -115,10 +114,8 @@
 
           <button type="submit">Save Minimums</button>
         </form>
-      </details>
-
-      <section id="result" class="result panel hidden"></section>
-    </main>
+      </section>
+    </div>
     <script src="/app.js"></script>
   </body>
 </html>

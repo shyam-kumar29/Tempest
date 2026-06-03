@@ -60,6 +60,42 @@ def _parse_dimension(value: Any) -> tuple[int | None, int | None]:
     return (int(match.group(1)), int(match.group(2)))
 
 
+def _normalize_surface(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    text = str(value).strip().lower()
+    if not text:
+        return None
+
+    cleaned = re.sub(r"[^a-z0-9/+ -]", " ", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    tokens = set(re.split(r"[\s/+,-]+", cleaned))
+
+    if cleaned in {"a", "asp", "asph", "asphalt"} or tokens & {"asphalt", "asph", "asp"}:
+        return "asphalt"
+    if cleaned in {"c", "conc", "concrete"} or tokens & {"concrete", "conc"}:
+        return "concrete"
+    if cleaned in {"g", "grass"} or tokens & {"grass"}:
+        return "grass"
+    if cleaned in {"t", "turf"} or tokens & {"turf"}:
+        return "turf"
+    if cleaned in {"grvl", "gravel"} or tokens & {"gravel", "grvl"}:
+        return "gravel"
+    if tokens & {"dirt", "earth"}:
+        return "dirt"
+    if tokens & {"water"}:
+        return "water"
+    if tokens & {"ice"}:
+        return "ice"
+    if tokens & {"snow"}:
+        return "snow"
+    if tokens & {"hard", "paved", "bituminous", "macadam", "sealed"}:
+        return "hard"
+
+    return cleaned
+
+
 def _normalize_runway(item: dict[str, Any]) -> list[RunwayRecord]:
     runway_id = str(_pick(item, "id", "runwayId", "name", "ident", "rwy") or "").strip()
     if not runway_id:
@@ -76,8 +112,7 @@ def _normalize_runway(item: dict[str, Any]) -> list[RunwayRecord]:
             length_ft = parsed_length
         if width_ft is None:
             width_ft = parsed_width
-    surface = _pick(item, "surface", "surf")
-    surface_str = str(surface).lower() if surface is not None else None
+    surface_str = _normalize_surface(_pick(item, "surface", "surf", "rwyType", "type"))
 
     if "/" in runway_id:
         parts = [part.strip() for part in runway_id.split("/") if part.strip()]

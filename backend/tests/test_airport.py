@@ -91,3 +91,21 @@ def test_normalize_airport_parses_dimension_field_for_length_and_width() -> None
     assert by_id["05"].width_ft == 150
     assert by_id["23"].length_ft == 6600
     assert by_id["23"].width_ft == 150
+
+
+def test_normalize_airport_maps_aviationweather_surface_code() -> None:
+    payload = {
+        "icaoId": "KLAF",
+        "runways": [
+            {
+                "id": "10/28",
+                "alignment": 99,
+                "dimension": "6600x150",
+                "surface": "A",
+            }
+        ],
+    }
+
+    airport = normalize_airport(payload)
+
+    assert {runway.surface for runway in airport.runways} == {"asphalt"}

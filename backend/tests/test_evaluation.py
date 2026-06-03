@@ -200,6 +200,42 @@ def test_evaluate_conditions_uses_taf_periods_for_planned_window() -> None:
     assert len(result.taf_summary["evaluated_periods"]) == 1
 
 
+def test_evaluate_conditions_parses_taf_plus_visibility() -> None:
+    profile = MinimumsProfile(
+        profile_id="primary",
+        display_name="Primary",
+        min_visibility_sm=5.0,
+    )
+    taf = TafRecord(
+        icao_id="KLAF",
+        raw_text="TAF KLAF 022320Z 0300/0324 05012G20KT P6SM SKC",
+        issued_at="2026-06-02T23:20:00Z",
+        valid_from="2026-06-03T00:00:00Z",
+        valid_to="2026-06-04T00:00:00Z",
+        station_name=None,
+        forecast=[
+            {
+                "timeFrom": "2026-06-03T00:00:00Z",
+                "timeTo": "2026-06-03T03:00:00Z",
+                "visib": "6+",
+                "clouds": [{"cover": "SKC", "base": None}],
+            }
+        ],
+        source_payload={},
+    )
+
+    result = evaluate_conditions(
+        profile=profile,
+        metar=_metar(),
+        taf=taf,
+        planned_departure="2026-06-03T01:00:00Z",
+    )
+
+    assert result.decision == "go"
+    assert result.taf_summary is not None
+    assert result.taf_summary["evaluated_periods"][0]["visibility_sm"] == 6.0
+
+
 def test_evaluate_conditions_checks_density_altitude() -> None:
     profile = MinimumsProfile(
         profile_id="primary",
@@ -236,3 +272,97 @@ def test_evaluate_conditions_checks_fuel_reserve_when_provided() -> None:
 
     assert result.decision == "no-go"
     assert any("fuel reserve" in reason.lower() for reason in result.fail_reasons)
+
+
+def test_evaluate_conditions_treats_clear_sky_as_passing_ceiling() -> None:
+    profile = MinimumsProfile(
+        profile_id="primary",
+        display_name="Primary",
+        min_ceiling_ft_agl=2500,
+    )
+    metar = _metar(sky_cover=[{"cover": "CLR", "base": None}])
+
+    result = evaluate_conditions(
+        profile=profile,
+        metar=metar,
+        planned_departure="2026-04-04T18:00:00Z",
+    )
+
+    assert result.decision == "go"
+    assert not result.unknowns
+    assert any("No ceiling" in reason for reason in result.pass_reasons)
+
+
+def test_evaluate_conditions_treats_missing_gust_as_no_gust() -> None:
+    profile = MinimumsProfile(
+        profile_id="primary",
+        display_name="Primary",
+        max_gust_kt=20,
+    )
+
+    result = evaluate_conditions(
+        profile=profile,
+        metar=_metar(wind_gust_kt=None),
+        planned_departure="2026-04-04T18:00:00Z",
+    )
+
+    assert result.decision == "go"
+    assert not result.caution_reasons
+    assert any("No gust" in reason for reason in result.pass_reasons)
+
+
+def test_evaluate_conditions_matches_hard_surface_for_paved_runway_minimums() -> None:
+    profile = MinimumsProfile(
+        profile_id="primary",
+        display_name="Primary",
+        allowed_runway_surfaces=["asphalt", "concrete"],
+    )
+    airport = AirportRecord(
+        icao_id="TEST",
+        iata_id=None,
+        name="Test Airport",
+        latitude=None,
+        longitude=None,
+        elevation_ft=None,
+        runways=[RunwayRecord("10", 100.0, 4000, 75, "hard")],
+        source_payload={},
+    )
+
+    result = evaluate_conditions(
+        profile=profile,
+        metar=_metar(),
+        airport=airport,
+        planned_departure="2026-04-04T18:00:00Z",
+    )
+
+    assert result.decision == "go"
+    assert not result.fail_reasons
+
+
+def test_evaluate_conditions_marks_missing_runway_surface_unknown_not_no_go() -> None:
+    profile = MinimumsProfile(
+        profile_id="primary",
+        display_name="Primary",
+        allowed_runway_surfaces=["asphalt"],
+    )
+    airport = AirportRecord(
+        icao_id="TEST",
+        iata_id=None,
+        name="Test Airport",
+        latitude=None,
+        longitude=None,
+        elevation_ft=None,
+        runways=[RunwayRecord("10", 100.0, 4000, 75, None)],
+        source_payload={},
+    )
+
+    result = evaluate_conditions(
+        profile=profile,
+        metar=_metar(),
+        airport=airport,
+        planned_departure="2026-04-04T18:00:00Z",
+    )
+
+    assert result.decision == "caution"
+    assert not result.fail_reasons
+    assert any("runway surfaces" in reason.lower() for reason in result.unknowns)

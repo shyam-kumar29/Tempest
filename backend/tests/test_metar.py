@@ -50,3 +50,15 @@ def test_normalize_metar_converts_altim_hpa_to_inhg() -> None:
 
     record = normalize_metar(payload)
     assert record.altimeter_in_hg == 30.14
+
+
+def test_normalize_metar_falls_back_to_raw_visibility_and_clear_sky() -> None:
+    payload = {
+        "icaoId": "KLAF",
+        "rawOb": "KLAF 021854Z 29005KT 10SM CLR 26/14 A2992",
+    }
+
+    record = normalize_metar(payload)
+
+    assert record.visibility_sm == 10.0
+    assert record.sky_cover == [{"cover": "CLR", "base": None}]

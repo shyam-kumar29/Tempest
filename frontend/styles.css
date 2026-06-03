@@ -87,9 +87,16 @@ h3 {
   font-weight: 650;
 }
 
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
 .planner-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(300px, 0.74fr);
+  grid-template-columns: 1fr;
   gap: 16px;
   align-items: stretch;
 }
@@ -181,7 +188,7 @@ button:focus {
 }
 
 button {
-  width: 100%;
+  width: fit-content;
   border: 0;
   border-radius: 7px;
   background: var(--ink);
@@ -201,14 +208,6 @@ button:hover {
   background: var(--blue);
 }
 
-.secondary-button {
-  width: auto;
-  min-width: 82px;
-  border: 1px solid var(--line);
-  background: #f5f7f6;
-  color: var(--ink);
-}
-
 .status {
   flex: 0 0 auto;
   border: 1px solid var(--line);
@@ -220,8 +219,19 @@ button:hover {
   font-weight: 850;
 }
 
-.profile-card {
-  min-height: 100%;
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  min-width: 42px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  padding: 0;
+  font-size: 1.1rem;
+  line-height: 1;
 }
 
 .profile-summary {
@@ -272,34 +282,51 @@ button:hover {
   font-weight: 850;
 }
 
-.setup-panel {
-  margin-top: 16px;
-  padding: 0;
+.minimums-form {
+  padding-top: 14px;
 }
 
-.setup-panel summary {
+.minimums-form button[type="submit"] {
+  margin-top: 4px;
+}
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
   display: flex;
-  align-items: center;
+  justify-content: flex-end;
+  background: rgba(18, 28, 24, 0.34);
+  backdrop-filter: blur(3px);
+}
+
+.settings-panel {
+  width: min(720px, 100%);
+  min-height: 100%;
+  overflow-y: auto;
+  border-left: 1px solid var(--line);
+  background: #fff;
+  padding: 22px;
+  box-shadow: -24px 0 70px rgba(23, 32, 28, 0.22);
+}
+
+.settings-head {
+  display: flex;
   justify-content: space-between;
   gap: 16px;
-  cursor: pointer;
-  list-style: none;
-  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 16px;
+  margin-bottom: 16px;
 }
 
-.setup-panel summary::-webkit-details-marker {
-  display: none;
-}
-
-.summary-hint {
+.settings-head p {
+  margin-bottom: 0;
   color: var(--muted);
-  font-size: 0.84rem;
-  font-weight: 750;
+  font-weight: 650;
 }
 
-.minimums-form {
-  border-top: 1px solid var(--line);
-  padding: 18px;
+.close-button {
+  font-size: 1.7rem;
 }
 
 .result {
@@ -423,11 +450,16 @@ pre {
   }
 
   .compact-button,
-  .secondary-button {
-    width: 100%;
+  .minimums-form button[type="submit"] {
+    width: fit-content;
   }
 
   .source-row {
     justify-content: flex-start;
+  }
+
+  .top-actions {
+    align-self: stretch;
+    justify-content: space-between;
   }
 }

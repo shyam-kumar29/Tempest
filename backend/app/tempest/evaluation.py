@@ -84,6 +84,29 @@ def _lowest_ceiling_ft(metar: MetarRecord) -> int | None:
     return min(ceilings)
 
 
+def _has_clear_sky_report(metar: MetarRecord) -> bool:
+    clear_codes = {"CLR", "SKC", "NSC", "NCD"}
+    if any(str(layer.get("cover", "")).upper() in clear_codes for layer in metar.sky_cover):
+        return True
+    return any(code in metar.raw_text.upper().split() for code in clear_codes)
+
+
+def _surface_matches(runway_surface: str | None, allowed_surfaces: list[str]) -> bool | None:
+    if runway_surface is None:
+        return None
+
+    surface = runway_surface.strip().lower()
+    allowed = {surface.strip().lower() for surface in allowed_surfaces}
+    if surface in allowed:
+        return True
+
+    hard_surfaces = {"asphalt", "concrete"}
+    if surface in {"hard", "paved"} and allowed & hard_surfaces:
+        return True
+
+    return False
+
+
 def _is_night(
     observed_at: datetime | None,
     *,
@@ -121,7 +144,7 @@ def _as_float(value: Any) -> float | None:
     if value is None:
         return None
     if isinstance(value, str):
-        cleaned = value.strip().upper().replace("P", "").replace("+", "")
+        cleaned = value.strip().upper().replace("SM", "").replace("P", "").replace("+", "")
         if cleaned in {"", "M"}:
             return None
         value = cleaned
@@ -235,7 +258,6 @@ def evaluate_conditions(
     pass_reasons: list[str] = []
     unknowns: list[str] = []
 
-    observed_at = parse_aviation_time(metar.observed_at)
     planned_at = (
         planned_departure
         if isinstance(planned_departure, datetime)
@@ -252,6 +274,7 @@ def evaluate_conditions(
         longitude=metar.longitude if metar.longitude is not None else (airport.longitude if airport else None),
     )
     ceiling_ft = _lowest_ceiling_ft(metar)
+    clear_sky = _has_clear_sky_report(metar)
     best_runway = _pick_best_runway(runway_wind_components or [])
     density_altitude_ft = _density_altitude_ft(metar, airport)
 
@@ -268,7 +291,9 @@ def evaluate_conditions(
             )
 
     if profile.min_ceiling_ft_agl is not None:
-        if ceiling_ft is None:
+        if ceiling_ft is None and clear_sky:
+            pass_reasons.append("No ceiling is reported in the current METAR.")
+        elif ceiling_ft is None:
             unknowns.append("Ceiling minimum is set, but no broken/overcast ceiling was parsed from METAR.")
         elif ceiling_ft < profile.min_ceiling_ft_agl:
             fail_reasons.append(
@@ -293,7 +318,7 @@ def evaluate_conditions(
 
     if profile.max_gust_kt is not None:
         if metar.wind_gust_kt is None:
-            caution_reasons.append("Gust limit is set, but no gust was reported in the current METAR.")
+            pass_reasons.append("No gust is reported in the current METAR.")
         elif metar.wind_gust_kt > profile.max_gust_kt:
             fail_reasons.append(
                 f"Gust {metar.wind_gust_kt} kt exceeds limit {profile.max_gust_kt} kt."
@@ -347,15 +372,20 @@ def evaluate_conditions(
                 )
 
         if profile.allowed_runway_surfaces is not None:
-            qualifying = [
-                r
+            matches = [
+                _surface_matches(r.surface, profile.allowed_runway_surfaces)
                 for r in airport.runways
-                if r.surface is not None and r.surface in profile.allowed_runway_surfaces
             ]
+            qualifying = [match for match in matches if match is True]
             if not qualifying:
-                fail_reasons.append(
-                    f"No runway matches allowed surfaces {profile.allowed_runway_surfaces}."
-                )
+                if any(match is None for match in matches):
+                    unknowns.append(
+                        f"Allowed runway surfaces are set to {profile.allowed_runway_surfaces}, but one or more runway surfaces are unavailable."
+                    )
+                else:
+                    fail_reasons.append(
+                        f"No runway matches allowed surfaces {profile.allowed_runway_surfaces}."
+                    )
             else:
                 pass_reasons.append(
                     f"At least one runway matches allowed surfaces {profile.allowed_runway_surfaces}."

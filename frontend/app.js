@@ -57,8 +57,12 @@ function setStatus(text) {
   $("apiStatus").textContent = text;
 }
 
-function setMinimumsOpen(open) {
-  $("minimumsDetails").open = open;
+function openSettings() {
+  $("settingsOverlay").classList.remove("hidden");
+}
+
+function closeSettings() {
+  $("settingsOverlay").classList.add("hidden");
 }
 
 function profilePayload() {
@@ -144,7 +148,7 @@ function renderProfiles() {
     select.appendChild(option);
     state.selectedProfile = null;
     renderProfileSummary(null);
-    setMinimumsOpen(true);
+    openSettings();
     return;
   }
 
@@ -160,7 +164,7 @@ function renderProfiles() {
   if (selected) {
     select.value = selected.profile_id;
     fillProfile(selected);
-    setMinimumsOpen(false);
+    closeSettings();
   }
 }
 
@@ -185,7 +189,7 @@ async function saveProfile(event) {
     await loadProfiles();
     fillProfile(data.profile);
     $("profileSelect").value = profileId;
-    setMinimumsOpen(false);
+    closeSettings();
     setStatus("Ready");
   } catch (error) {
     setStatus("Minimums save failed");
@@ -273,7 +277,7 @@ async function evaluateFlight() {
   const icao = $("icao").value.trim().toUpperCase();
 
   if (!selectedProfileId) {
-    setMinimumsOpen(true);
+    openSettings();
     setStatus("Create minimums first");
     $("result").innerHTML = `<div class="decision caution"><h2>Create a minimums profile before evaluating.</h2></div>`;
     $("result").classList.remove("hidden");
@@ -321,7 +325,11 @@ async function init() {
       fillProfile(profile);
     }
   });
-  $("editMinimumsButton").addEventListener("click", () => setMinimumsOpen(true));
+  $("settingsButton").addEventListener("click", openSettings);
+  $("closeSettingsButton").addEventListener("click", closeSettings);
+  $("settingsOverlay").addEventListener("click", (event) => {
+    if (event.target === $("settingsOverlay")) closeSettings();
+  });
   $("evaluateButton").addEventListener("click", evaluateFlight);
 
   try {
