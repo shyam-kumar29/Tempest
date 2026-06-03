@@ -21,6 +21,15 @@ function $(id) {
   return document.getElementById(id);
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 function numberOrNull(value) {
   if (value === "") return null;
   const parsed = Number(value);
@@ -46,6 +55,10 @@ async function api(path, options = {}) {
 
 function setStatus(text) {
   $("apiStatus").textContent = text;
+}
+
+function setMinimumsOpen(open) {
+  $("minimumsDetails").open = open;
 }
 
 function profilePayload() {
@@ -82,11 +95,59 @@ function fillProfile(profile) {
   form.elements.allow_ifr.checked = profile.allow_ifr === true;
   form.elements.allow_night.checked = profile.allow_night === true;
   form.elements.require_dry_runway.checked = profile.require_dry_runway === true;
+  renderProfileSummary(profile);
+}
+
+function profileLimit(profile, field, suffix) {
+  const value = profile[field];
+  return value === null || value === undefined ? "not set" : `${value}${suffix}`;
+}
+
+function renderProfileSummary(profile) {
+  const summary = $("profileSummary");
+  if (!profile) {
+    summary.innerHTML = `
+      <p class="empty-state">No saved minimums profile yet.</p>
+      <p>Create one once, then keep this section folded unless your limits change.</p>
+    `;
+    return;
+  }
+
+  const surfaces = profile.allowed_runway_surfaces?.length
+    ? profile.allowed_runway_surfaces.join(", ")
+    : "any";
+
+  summary.innerHTML = `
+    <div class="summary-title">
+      <strong>${escapeHtml(profile.display_name || profile.profile_id)}</strong>
+      <span>${escapeHtml(profile.profile_id)}</span>
+    </div>
+    <dl class="limit-list">
+      <div><dt>Ceiling</dt><dd>${escapeHtml(profileLimit(profile, "min_ceiling_ft_agl", " ft"))}</dd></div>
+      <div><dt>Visibility</dt><dd>${escapeHtml(profileLimit(profile, "min_visibility_sm", " SM"))}</dd></div>
+      <div><dt>Crosswind</dt><dd>${escapeHtml(profileLimit(profile, "max_crosswind_kt", " kt"))}</dd></div>
+      <div><dt>Wind / Gust</dt><dd>${escapeHtml(profileLimit(profile, "max_surface_wind_kt", " kt"))} / ${escapeHtml(profileLimit(profile, "max_gust_kt", " kt"))}</dd></div>
+      <div><dt>Runway</dt><dd>${escapeHtml(profileLimit(profile, "min_runway_length_ft", " ft"))} x ${escapeHtml(profileLimit(profile, "min_runway_width_ft", " ft"))}</dd></div>
+      <div><dt>Surfaces</dt><dd>${escapeHtml(surfaces)}</dd></div>
+    </dl>
+  `;
 }
 
 function renderProfiles() {
   const select = $("profileSelect");
   select.innerHTML = "";
+
+  if (!state.profiles.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Create a profile first";
+    select.appendChild(option);
+    state.selectedProfile = null;
+    renderProfileSummary(null);
+    setMinimumsOpen(true);
+    return;
+  }
+
   for (const profile of state.profiles) {
     const option = document.createElement("option");
     option.value = profile.profile_id;
@@ -99,6 +160,7 @@ function renderProfiles() {
   if (selected) {
     select.value = selected.profile_id;
     fillProfile(selected);
+    setMinimumsOpen(false);
   }
 }
 
@@ -112,67 +174,128 @@ async function saveProfile(event) {
   event.preventDefault();
   const profileId = $("profileId").value.trim();
   if (!profileId) return;
-  const data = await api(`/minimums/${encodeURIComponent(profileId)}`, {
-    method: "POST",
-    body: JSON.stringify(profilePayload()),
-  });
-  localStorage.setItem("tempest:lastProfile", profileId);
-  await loadProfiles();
-  fillProfile(data.profile);
+
+  setStatus("Saving minimums");
+  try {
+    const data = await api(`/minimums/${encodeURIComponent(profileId)}`, {
+      method: "POST",
+      body: JSON.stringify(profilePayload()),
+    });
+    localStorage.setItem("tempest:lastProfile", profileId);
+    await loadProfiles();
+    fillProfile(data.profile);
+    $("profileSelect").value = profileId;
+    setMinimumsOpen(false);
+    setStatus("Ready");
+  } catch (error) {
+    setStatus("Minimums save failed");
+    $("result").innerHTML = `<div class="decision no-go"><h2>${escapeHtml(error.message)}</h2></div>`;
+    $("result").classList.remove("hidden");
+  }
 }
 
 function listItems(items) {
   if (!items || !items.length) return "<p>None</p>";
-  return `<ul>${items.map((item) => `<li>${item}</li>`).join("")}</ul>`;
+  return `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+}
+
+function bestRunwaySummary(bestRunway) {
+  if (!bestRunway) return "<p>No runway recommendation available.</p>";
+  return `<pre>${escapeHtml(JSON.stringify(bestRunway, null, 2))}</pre>`;
+}
+
+function rawText(value, fallback) {
+  return `<pre>${escapeHtml(value || fallback)}</pre>`;
+}
+
+function localDateTimeValue(date) {
+  const offsetMs = date.getTimezoneOffset() * 60 * 1000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
 }
 
 function renderResult(data) {
   const result = $("result");
   const decision = data.decision;
   const weather = data.weather || {};
+  const sources = data.sources || {};
+  const errors = data.errors || {};
   const decisionClass = decision.decision === "no-go" ? "no-go" : decision.decision;
 
   result.innerHTML = `
-    <div class="decision ${decisionClass}">
+    <div class="decision ${escapeHtml(decisionClass)}">
       <div>
         <p class="eyebrow">Decision</p>
-        <h2>${decision.decision.toUpperCase()}</h2>
+        <h2>${escapeHtml(decision.decision.toUpperCase())}</h2>
       </div>
-      <div>METAR ${data.sources.metar || "unknown"} · TAF ${data.sources.taf || "n/a"} · Airport ${data.sources.airport || "n/a"}</div>
+      <div class="source-row">
+        METAR ${escapeHtml(sources.metar || "unknown")}
+        <span>TAF ${escapeHtml(sources.taf || "n/a")}</span>
+        <span>Airport ${escapeHtml(sources.airport || "n/a")}</span>
+      </div>
     </div>
     <div class="reason-grid">
-      <div class="reason-box"><h3>Failures</h3>${listItems(decision.fail_reasons)}</div>
-      <div class="reason-box"><h3>Cautions</h3>${listItems(decision.caution_reasons)}</div>
-      <div class="reason-box"><h3>Unknowns</h3>${listItems(decision.unknowns)}</div>
-      <div class="reason-box"><h3>Passes</h3>${listItems(decision.pass_reasons)}</div>
+      <div class="reason-box failure"><h3>Failures</h3>${listItems(decision.fail_reasons)}</div>
+      <div class="reason-box caution-box"><h3>Cautions</h3>${listItems(decision.caution_reasons)}</div>
+      <div class="reason-box unknown"><h3>Unknowns</h3>${listItems(decision.unknowns)}</div>
+      <div class="reason-box pass"><h3>Passes</h3>${listItems(decision.pass_reasons)}</div>
     </div>
-    <h3 style="margin-top:18px">Best Runway</h3>
-    <pre>${JSON.stringify(decision.best_runway || {}, null, 2)}</pre>
-    <h3>Raw METAR</h3>
-    <pre>${weather.metar?.raw_text || "Unavailable"}</pre>
-    <h3>Raw TAF</h3>
-    <pre>${weather.taf?.raw_text || data.errors?.taf || "Unavailable"}</pre>
+    <div class="details-grid">
+      <section>
+        <h3>Best Runway</h3>
+        ${bestRunwaySummary(decision.best_runway)}
+      </section>
+      <section>
+        <h3>Airport / TAF Notes</h3>
+        ${listItems([errors.airport, errors.taf].filter(Boolean))}
+      </section>
+    </div>
+    <h3 class="data-heading">Raw METAR</h3>
+    ${rawText(weather.metar?.raw_text, "Unavailable")}
+    <h3 class="data-heading">Raw TAF</h3>
+    ${rawText(weather.taf?.raw_text, errors.taf || "Unavailable")}
   `;
   result.classList.remove("hidden");
+  result.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function plannedDepartureIso() {
+  const planned = $("plannedDeparture").value;
+  if (!planned) return null;
+  const date = new Date(planned);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("Planned departure is not a valid date/time");
+  }
+  return date.toISOString();
 }
 
 async function evaluateFlight() {
-  const profileId = $("profileId").value.trim();
+  const selectedProfileId = $("profileSelect").value || $("profileId").value.trim();
   const icao = $("icao").value.trim().toUpperCase();
-  if (!profileId || !icao) return;
+
+  if (!selectedProfileId) {
+    setMinimumsOpen(true);
+    setStatus("Create minimums first");
+    $("result").innerHTML = `<div class="decision caution"><h2>Create a minimums profile before evaluating.</h2></div>`;
+    $("result").classList.remove("hidden");
+    return;
+  }
+  if (!icao) {
+    setStatus("Airport required");
+    $("icao").focus();
+    return;
+  }
 
   localStorage.setItem("tempest:lastIcao", icao);
-  localStorage.setItem("tempest:lastProfile", profileId);
+  localStorage.setItem("tempest:lastProfile", selectedProfileId);
   setStatus("Evaluating");
 
   try {
-    const planned = $("plannedDeparture").value;
     const data = await api("/evaluate", {
       method: "POST",
       body: JSON.stringify({
         icao,
-        profile_id: profileId,
-        planned_departure: planned ? new Date(planned).toISOString() : null,
+        profile_id: selectedProfileId,
+        planned_departure: plannedDepartureIso(),
         taf_lookahead_hours: numberOrNull($("tafLookahead").value) || 3,
         fuel_reserve_min: numberOrNull($("fuelReserve").value),
         include_taf: $("includeTaf").checked,
@@ -181,7 +304,7 @@ async function evaluateFlight() {
     renderResult(data);
     setStatus("Ready");
   } catch (error) {
-    $("result").innerHTML = `<div class="decision no-go"><h2>${error.message}</h2></div>`;
+    $("result").innerHTML = `<div class="decision no-go"><h2>${escapeHtml(error.message)}</h2></div>`;
     $("result").classList.remove("hidden");
     setStatus("Error");
   }
@@ -189,14 +312,16 @@ async function evaluateFlight() {
 
 async function init() {
   $("icao").value = localStorage.getItem("tempest:lastIcao") || "KLAF";
-  $("plannedDeparture").value = new Date(Date.now() + 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 16);
+  $("plannedDeparture").value = localDateTimeValue(new Date(Date.now() + 60 * 60 * 1000));
   $("minimumsForm").addEventListener("submit", saveProfile);
   $("profileSelect").addEventListener("change", (event) => {
     const profile = state.profiles.find((item) => item.profile_id === event.target.value);
-    if (profile) fillProfile(profile);
+    if (profile) {
+      localStorage.setItem("tempest:lastProfile", profile.profile_id);
+      fillProfile(profile);
+    }
   });
+  $("editMinimumsButton").addEventListener("click", () => setMinimumsOpen(true));
   $("evaluateButton").addEventListener("click", evaluateFlight);
 
   try {

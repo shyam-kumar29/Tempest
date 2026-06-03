@@ -195,3 +195,27 @@ def test_invalid_icao_returns_422(client):
 def test_missing_profile_returns_404(client):
     response = client.post("/evaluate", json={"icao": "KLAF", "profile_id": "missing"})
     assert response.status_code == 404
+
+
+def test_evaluate_rejects_invalid_numeric_fields(client):
+    client.post("/minimums/primary", json={"display_name": "Primary"})
+
+    response = client.post(
+        "/evaluate",
+        json={"icao": "KLAF", "profile_id": "primary", "taf_lookahead_hours": "soon"},
+    )
+
+    assert response.status_code == 422
+    assert "taf_lookahead_hours" in response.json()["detail"]
+
+
+def test_evaluate_rejects_negative_fuel_reserve(client):
+    client.post("/minimums/primary", json={"display_name": "Primary"})
+
+    response = client.post(
+        "/evaluate",
+        json={"icao": "KLAF", "profile_id": "primary", "fuel_reserve_min": -1},
+    )
+
+    assert response.status_code == 422
+    assert "fuel_reserve_min" in response.json()["detail"]

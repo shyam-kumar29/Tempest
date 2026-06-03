@@ -58,6 +58,26 @@ def _validate_icao(icao: str) -> str:
     return station
 
 
+def _optional_float(payload: dict[str, Any], key: str, default: float | None = None) -> float | None:
+    value = payload.get(key, default)
+    if value is None or value == "":
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"{key} must be a number") from exc
+    if parsed < 0:
+        raise HTTPException(status_code=422, detail=f"{key} cannot be negative")
+    return parsed
+
+
+def _optional_int(payload: dict[str, Any], key: str) -> int | None:
+    value = _optional_float(payload, key)
+    if value is None:
+        return None
+    return int(value)
+
+
 def _profile_from_payload(profile_id: str, payload: dict[str, Any]) -> MinimumsProfile:
     body = dict(payload)
     body["profile_id"] = profile_id.strip()
@@ -270,6 +290,10 @@ def evaluate(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         prefer_cache=bool(payload.get("prefer_cache", False)),
     )
 
+    taf_lookahead_hours = _optional_float(payload, "taf_lookahead_hours", 3.0) or 3.0
+    if taf_lookahead_hours <= 0:
+        raise HTTPException(status_code=422, detail="taf_lookahead_hours must be greater than 0")
+
     result = evaluate_conditions(
         profile=profile,
         metar=bundle["metar"],
@@ -277,8 +301,8 @@ def evaluate(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         airport=bundle["airport"],
         runway_wind_components=bundle["runway_wind_components"],
         planned_departure=payload.get("planned_departure"),
-        taf_lookahead_hours=float(payload.get("taf_lookahead_hours", 3)),
-        fuel_reserve_min=payload.get("fuel_reserve_min"),
+        taf_lookahead_hours=taf_lookahead_hours,
+        fuel_reserve_min=_optional_int(payload, "fuel_reserve_min"),
     )
 
     return {
