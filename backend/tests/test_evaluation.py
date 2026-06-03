@@ -272,6 +272,78 @@ def test_evaluate_conditions_ignores_metar_outside_departure_window_and_uses_taf
     assert any("TAF visibility" in reason for reason in result.pass_reasons)
 
 
+def test_evaluate_conditions_treats_clear_taf_as_no_ceiling() -> None:
+    profile = MinimumsProfile(
+        profile_id="primary",
+        display_name="Primary",
+        min_ceiling_ft_agl=2500,
+    )
+    taf = TafRecord(
+        icao_id="KLAF",
+        raw_text="TAF KLAF 041720Z 0418/0518 22012KT P6SM CLR",
+        issued_at="2026-04-04T17:20:00Z",
+        valid_from="2026-04-04T18:00:00Z",
+        valid_to="2026-04-05T18:00:00Z",
+        station_name=None,
+        forecast=[
+            {
+                "timeFrom": "2026-04-04T18:00:00Z",
+                "timeTo": "2026-04-04T21:00:00Z",
+                "visib": 10,
+                "clouds": [{"cover": "CLR", "base": None}],
+            }
+        ],
+        source_payload={},
+    )
+
+    result = evaluate_conditions(
+        profile=profile,
+        metar=_metar(observed_at="2026-04-04T15:00:00Z"),
+        taf=taf,
+        planned_departure="2026-04-04T18:30:00Z",
+    )
+
+    assert result.decision == "go"
+    assert not result.unknowns
+    assert any("TAF reports no ceiling" in reason for reason in result.pass_reasons)
+
+
+def test_evaluate_conditions_treats_few_and_scattered_taf_as_no_ceiling() -> None:
+    profile = MinimumsProfile(
+        profile_id="primary",
+        display_name="Primary",
+        min_ceiling_ft_agl=2500,
+    )
+    taf = TafRecord(
+        icao_id="KLAF",
+        raw_text="TAF KLAF 041720Z 0418/0518 22012KT P6SM FEW250",
+        issued_at="2026-04-04T17:20:00Z",
+        valid_from="2026-04-04T18:00:00Z",
+        valid_to="2026-04-05T18:00:00Z",
+        station_name=None,
+        forecast=[
+            {
+                "timeFrom": "2026-04-04T18:00:00Z",
+                "timeTo": "2026-04-04T21:00:00Z",
+                "visib": 10,
+                "clouds": [{"cover": "FEW", "base": 25000}, {"cover": "SCT", "base": 30000}],
+            }
+        ],
+        source_payload={},
+    )
+
+    result = evaluate_conditions(
+        profile=profile,
+        metar=_metar(observed_at="2026-04-04T15:00:00Z"),
+        taf=taf,
+        planned_departure="2026-04-04T18:30:00Z",
+    )
+
+    assert result.decision == "go"
+    assert not result.unknowns
+    assert any("TAF reports no ceiling" in reason for reason in result.pass_reasons)
+
+
 def test_evaluate_conditions_uses_metar_inside_departure_window() -> None:
     profile = MinimumsProfile(
         profile_id="primary",
@@ -334,6 +406,25 @@ def test_evaluate_conditions_treats_clear_sky_as_passing_ceiling() -> None:
         min_ceiling_ft_agl=2500,
     )
     metar = _metar(sky_cover=[{"cover": "CLR", "base": None}])
+
+    result = evaluate_conditions(
+        profile=profile,
+        metar=metar,
+        planned_departure="2026-04-04T15:30:00Z",
+    )
+
+    assert result.decision == "go"
+    assert not result.unknowns
+    assert any("No ceiling" in reason for reason in result.pass_reasons)
+
+
+def test_evaluate_conditions_treats_few_and_scattered_as_no_metar_ceiling() -> None:
+    profile = MinimumsProfile(
+        profile_id="primary",
+        display_name="Primary",
+        min_ceiling_ft_agl=2500,
+    )
+    metar = _metar(sky_cover=[{"cover": "FEW", "base": 2500}, {"cover": "SCT", "base": 4500}])
 
     result = evaluate_conditions(
         profile=profile,

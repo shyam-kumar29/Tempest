@@ -84,6 +84,23 @@ def _lowest_ceiling_ft(metar: MetarRecord) -> int | None:
     return min(ceilings)
 
 
+def _has_reported_clouds_without_ceiling(clouds: Any) -> bool:
+    if not isinstance(clouds, list) or not clouds:
+        return False
+
+    saw_cloud_report = False
+    for layer in clouds:
+        if not isinstance(layer, dict):
+            continue
+        cover = str(layer.get("cover", "")).upper()
+        if not cover:
+            continue
+        saw_cloud_report = True
+        if cover in {"BKN", "OVC", "VV"}:
+            return False
+    return saw_cloud_report
+
+
 def _has_clear_sky_report(metar: MetarRecord) -> bool:
     clear_codes = {"CLR", "SKC", "NSC", "NCD"}
     if any(str(layer.get("cover", "")).upper() in clear_codes for layer in metar.sky_cover):
@@ -283,11 +300,13 @@ def _ceiling_from_clouds(clouds: Any) -> int | None:
 
 def _taf_period_summary(period: dict[str, Any]) -> dict[str, Any]:
     start, end = _taf_period_bounds(period)
+    clouds = period.get("clouds") or period.get("sky_condition")
     return {
         "from": None if start is None else start.isoformat(),
         "to": None if end is None else end.isoformat(),
         "visibility_sm": _as_float(period.get("visib") or period.get("visibility")),
-        "ceiling_ft_agl": _ceiling_from_clouds(period.get("clouds") or period.get("sky_condition")),
+        "ceiling_ft_agl": _ceiling_from_clouds(clouds),
+        "no_ceiling_reported": _has_reported_clouds_without_ceiling(clouds),
         "wind_speed_kt": _as_int(period.get("wspd") or period.get("wind_speed_kt")),
         "wind_gust_kt": _as_int(period.get("wgst") or period.get("wind_gust_kt")),
         "raw": period,
@@ -350,7 +369,9 @@ def evaluate_conditions(
         longitude=metar.longitude if metar.longitude is not None else (airport.longitude if airport else None),
     )
     ceiling_ft = _lowest_ceiling_ft(metar)
-    clear_sky = _has_clear_sky_report(metar)
+    no_metar_ceiling_reported = (
+        _has_reported_clouds_without_ceiling(metar.sky_cover) or _has_clear_sky_report(metar)
+    )
     density_altitude_ft = _density_altitude_ft(metar, airport)
 
     relevant_taf_periods: list[dict[str, Any]] = []
@@ -412,7 +433,7 @@ def evaluate_conditions(
             )
 
     if profile.min_ceiling_ft_agl is not None and metar_applies:
-        if ceiling_ft is None and clear_sky:
+        if ceiling_ft is None and no_metar_ceiling_reported:
             pass_reasons.append("No ceiling is reported in the current METAR.")
         elif ceiling_ft is None:
             unknowns.append("Ceiling minimum is set, but no broken/overcast ceiling was parsed from METAR.")
@@ -426,12 +447,7 @@ def evaluate_conditions(
             )
     elif profile.min_ceiling_ft_agl is not None and selected_taf_period is not None:
         taf_ceiling_ft = selected_taf_period["ceiling_ft_agl"]
-        taf_clouds = selected_taf_period["raw"].get("clouds") or selected_taf_period["raw"].get("sky_condition")
-        taf_clear = (
-            isinstance(taf_clouds, list)
-            and any(str(layer.get("cover", "")).upper() in {"CLR", "SKC", "NSC", "NCD"} for layer in taf_clouds if isinstance(layer, dict))
-        )
-        if taf_ceiling_ft is None and taf_clear:
+        if taf_ceiling_ft is None and selected_taf_period["no_ceiling_reported"]:
             pass_reasons.append("TAF reports no ceiling at planned departure.")
         elif taf_ceiling_ft is None:
             unknowns.append("Ceiling minimum is set, but TAF ceiling is unavailable for the planned departure.")
