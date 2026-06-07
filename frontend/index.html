@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tempest</title>
-    <link rel="stylesheet" href="/styles.css?v=20260603-settings-page" />
+    <link rel="stylesheet" href="/styles.css?v=20260607-route-weather" />
   </head>
   <body>
     <main class="shell">
@@ -40,9 +40,9 @@
           </div>
 
           <div class="flight-fields">
-            <label>
-              Airport ICAO
-              <input id="icao" maxlength="4" placeholder="KLAF" autocomplete="off" />
+            <label class="route-field">
+              Route
+              <input id="route" placeholder="KLAF - KIND" autocomplete="off" />
             </label>
             <label>
               Minimums Profile
@@ -51,6 +51,18 @@
             <label>
               Planned Departure
               <input id="plannedDeparture" type="datetime-local" />
+            </label>
+            <label>
+              Radius (NM)
+              <input id="corridorRadius" type="number" min="1" step="1" value="10" />
+            </label>
+            <label>
+              Sample Every (NM)
+              <input id="sampleSpacing" type="number" min="1" step="1" value="25" />
+            </label>
+            <label>
+              Groundspeed (kt)
+              <input id="groundSpeed" type="number" min="1" step="1" value="100" />
             </label>
           </div>
         </section>
@@ -121,6 +133,6 @@
         </form>
       </section>
     </div>
-    <script src="/app.js?v=20260603-settings-page"></script>
+    <script src="/app.js?v=20260607-route-weather"></script>
   </body>
 </html>

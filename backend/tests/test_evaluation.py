@@ -234,6 +234,8 @@ def test_evaluate_conditions_parses_taf_plus_visibility() -> None:
     assert result.decision == "go"
     assert result.taf_summary is not None
     assert result.taf_summary["evaluated_periods"][0]["visibility_sm"] == 6.0
+    assert result.taf_summary["evaluated_periods"][0]["visibility_display"] == "> 6 SM"
+    assert any("TAF visibility > 6 SM" in reason for reason in result.pass_reasons)
 
 
 def test_evaluate_conditions_ignores_metar_outside_departure_window_and_uses_taf() -> None:
@@ -342,6 +344,87 @@ def test_evaluate_conditions_treats_few_and_scattered_taf_as_no_ceiling() -> Non
     assert result.decision == "go"
     assert not result.unknowns
     assert any("TAF reports no ceiling" in reason for reason in result.pass_reasons)
+
+
+def test_evaluate_conditions_treats_low_variable_taf_wind_as_info() -> None:
+    profile = MinimumsProfile(
+        profile_id="primary",
+        display_name="Primary",
+        max_crosswind_kt=12,
+        max_tailwind_kt=7,
+    )
+    taf = TafRecord(
+        icao_id="KLAF",
+        raw_text="TAF KLAF 041720Z 0418/0518 VRB03KT P6SM BKN040",
+        issued_at="2026-04-04T17:20:00Z",
+        valid_from="2026-04-04T18:00:00Z",
+        valid_to="2026-04-05T18:00:00Z",
+        station_name=None,
+        forecast=[
+            {
+                "timeFrom": "2026-04-04T18:00:00Z",
+                "timeTo": "2026-04-04T21:00:00Z",
+                "wdir": "VRB",
+                "wspd": 3,
+                "visib": 10,
+                "clouds": [{"cover": "BKN", "base": 4000}],
+            }
+        ],
+        source_payload={},
+    )
+
+    result = evaluate_conditions(
+        profile=profile,
+        metar=_metar(observed_at="2026-04-04T15:00:00Z"),
+        taf=taf,
+        airport=_airport(),
+        planned_departure="2026-04-04T18:30:00Z",
+    )
+
+    assert result.decision == "go"
+    assert not result.caution_reasons
+    assert not result.unknowns
+    assert any("variable wind 3 kt" in reason for reason in result.pass_reasons)
+
+
+def test_evaluate_conditions_treats_strong_variable_taf_wind_as_caution() -> None:
+    profile = MinimumsProfile(
+        profile_id="primary",
+        display_name="Primary",
+        max_crosswind_kt=12,
+        max_tailwind_kt=7,
+    )
+    taf = TafRecord(
+        icao_id="KLAF",
+        raw_text="TAF KLAF 041720Z 0418/0518 VRB12KT P6SM BKN040",
+        issued_at="2026-04-04T17:20:00Z",
+        valid_from="2026-04-04T18:00:00Z",
+        valid_to="2026-04-05T18:00:00Z",
+        station_name=None,
+        forecast=[
+            {
+                "timeFrom": "2026-04-04T18:00:00Z",
+                "timeTo": "2026-04-04T21:00:00Z",
+                "wdir": "VRB",
+                "wspd": 12,
+                "visib": 10,
+                "clouds": [{"cover": "BKN", "base": 4000}],
+            }
+        ],
+        source_payload={},
+    )
+
+    result = evaluate_conditions(
+        profile=profile,
+        metar=_metar(observed_at="2026-04-04T15:00:00Z"),
+        taf=taf,
+        airport=_airport(),
+        planned_departure="2026-04-04T18:30:00Z",
+    )
+
+    assert result.decision == "caution"
+    assert not result.unknowns
+    assert any("variable wind 12 kt" in reason for reason in result.caution_reasons)
 
 
 def test_evaluate_conditions_uses_metar_inside_departure_window() -> None:

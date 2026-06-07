@@ -214,9 +214,120 @@ function rawText(value, fallback) {
   return `<pre>${escapeHtml(value || fallback)}</pre>`;
 }
 
+function decisionClassFor(decision) {
+  return decision === "no-go" ? "no-go" : decision;
+}
+
+function formatValue(value, suffix = "") {
+  return value === null || value === undefined || value === "" ? "Unavailable" : `${value}${suffix}`;
+}
+
+function formatWind(direction, speed, gust) {
+  if (speed === null || speed === undefined) return "Unavailable";
+  const directionText =
+    direction === null || direction === undefined || direction === "" ? "Direction unavailable" : `${direction}`;
+  const gustText = gust === null || gust === undefined ? "" : `G${gust}`;
+  return `${directionText} at ${speed}${gustText} kt`;
+}
+
+function decodedRows(rows) {
+  return `
+    <dl class="decoded-list">
+      ${rows
+        .map(
+          ([label, value]) => `
+            <div>
+              <dt>${escapeHtml(label)}</dt>
+              <dd>${escapeHtml(value)}</dd>
+            </div>
+          `
+        )
+        .join("")}
+    </dl>
+  `;
+}
+
+function metarCoversPlannedDeparture(summary) {
+  if (!summary?.observed_at || !summary?.planned_departure) return false;
+  const observed = new Date(summary.observed_at);
+  const planned = new Date(summary.planned_departure);
+  if (Number.isNaN(observed.getTime()) || Number.isNaN(planned.getTime())) return false;
+  const deltaMs = planned.getTime() - observed.getTime();
+  return deltaMs >= 0 && deltaMs <= 60 * 60 * 1000;
+}
+
+function localDisplayTime(value) {
+  if (!value) return "Unavailable";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function renderDecodedWeather(decision) {
+  const metar = decision.metar_summary || {};
+  const tafPeriods = decision.taf_summary?.evaluated_periods || [];
+  const useMetar = metarCoversPlannedDeparture(metar) || !tafPeriods.length;
+
+  if (useMetar) {
+    return `
+      <aside class="decoded-weather">
+        <p class="eyebrow">Decoded METAR</p>
+        <h3>Planned Time</h3>
+        ${decodedRows([
+          ["Observed", metar.observed_at_local || metar.observed_at || "Unavailable"],
+          ["Flight category", formatValue(metar.flight_category)],
+          ["Visibility", formatValue(metar.visibility_sm, " SM")],
+          ["Ceiling", metar.ceiling_ft_agl === null || metar.ceiling_ft_agl === undefined ? "No ceiling parsed" : `${metar.ceiling_ft_agl} ft AGL`],
+          ["Wind", formatWind(metar.wind_direction_degrees, metar.wind_speed_kt, metar.wind_gust_kt)],
+          ["Density altitude", formatValue(metar.density_altitude_ft, " ft")],
+        ])}
+      </aside>
+    `;
+  }
+
+  const period = tafPeriods[0];
+  const ceiling =
+    period.ceiling_ft_agl === null || period.ceiling_ft_agl === undefined
+      ? period.no_ceiling_reported
+        ? "No ceiling forecast"
+        : "Unavailable"
+      : `${period.ceiling_ft_agl} ft AGL`;
+
+  return `
+    <aside class="decoded-weather">
+      <p class="eyebrow">Decoded TAF</p>
+      <h3>Matching Period</h3>
+      ${decodedRows([
+        ["From", localDisplayTime(period.from)],
+        ["To", localDisplayTime(period.to)],
+        ["Visibility", period.visibility_display || formatValue(period.visibility_sm, " SM")],
+        ["Ceiling", ceiling],
+        ["Wind", formatWind(period.wind_direction, period.wind_speed_kt, period.wind_gust_kt)],
+      ])}
+    </aside>
+  `;
+}
+
 function localDateTimeValue(date) {
   const offsetMs = date.getTimezoneOffset() * 60 * 1000;
   return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function routeTokens(route) {
+  return route
+    .split(/[\s,;\->]+/)
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean);
+}
+
+function numberOrDefault(id, fallback) {
+  const value = numberOrNull($(id).value);
+  return value === null ? fallback : value;
 }
 
 function renderResult(data) {
@@ -225,7 +336,7 @@ function renderResult(data) {
   const weather = data.weather || {};
   const sources = data.sources || {};
   const errors = data.errors || {};
-  const decisionClass = decision.decision === "no-go" ? "no-go" : decision.decision;
+  const decisionClass = decisionClassFor(decision.decision);
 
   result.innerHTML = `
     <div class="decision ${escapeHtml(decisionClass)}">
@@ -239,11 +350,14 @@ function renderResult(data) {
         <span>Airport ${escapeHtml(sources.airport || "n/a")}</span>
       </div>
     </div>
-    <div class="reason-grid">
-      <div class="reason-box failure"><h3>Failures</h3>${listItems(decision.fail_reasons)}</div>
-      <div class="reason-box caution-box"><h3>Cautions</h3>${listItems(decision.caution_reasons)}</div>
-      <div class="reason-box unknown"><h3>Unknowns</h3>${listItems(decision.unknowns)}</div>
-      <div class="reason-box pass"><h3>Passes</h3>${listItems(decision.pass_reasons)}</div>
+    <div class="result-body">
+      <div class="reason-grid">
+        <div class="reason-box failure"><h3>Failures</h3>${listItems(decision.fail_reasons)}</div>
+        <div class="reason-box caution-box"><h3>Cautions</h3>${listItems(decision.caution_reasons)}</div>
+        <div class="reason-box unknown"><h3>Unknowns</h3>${listItems(decision.unknowns)}</div>
+        <div class="reason-box pass"><h3>Passes</h3>${listItems(decision.pass_reasons)}</div>
+      </div>
+      ${renderDecodedWeather(decision)}
     </div>
     <div class="details-grid">
       <section>
@@ -264,6 +378,90 @@ function renderResult(data) {
   result.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+function renderRouteLegs(legs) {
+  if (!legs || !legs.length) return "<p>No route legs available.</p>";
+  return `
+    <dl class="route-leg-list">
+      ${legs
+        .map(
+          (leg) => `
+            <div>
+              <dt>${escapeHtml(leg.from)} to ${escapeHtml(leg.to)}</dt>
+              <dd>${escapeHtml(leg.distance_nm)} NM · ${escapeHtml(localDisplayTime(leg.estimated_departure))} to ${escapeHtml(localDisplayTime(leg.estimated_arrival))}</dd>
+            </div>
+          `
+        )
+        .join("")}
+    </dl>
+  `;
+}
+
+function renderRouteStation(station) {
+  const decision = station.decision || {};
+  const decisionClass = decisionClassFor(decision.decision || "caution");
+  const title = `${station.role || "station"} · ${station.icao_id}`;
+  const errors = station.errors || {};
+
+  return `
+    <section class="station-card">
+      <div class="station-head">
+        <div>
+          <p class="eyebrow">${escapeHtml(station.role || "station")}</p>
+          <h3>${escapeHtml(station.icao_id)}</h3>
+        </div>
+        <span class="decision-pill ${escapeHtml(decisionClass)}">${escapeHtml((decision.decision || "unknown").toUpperCase())}</span>
+      </div>
+      <div class="station-meta">
+        <span>${escapeHtml(localDisplayTime(station.planned_time))}</span>
+        <span>${escapeHtml(formatValue(station.distance_from_departure_nm, " NM"))}</span>
+      </div>
+      <div class="result-body station-result-body" aria-label="${escapeHtml(title)} weather details">
+        <div class="reason-grid station-reason-grid">
+          <div class="reason-box failure"><h3>Failures</h3>${listItems(decision.fail_reasons)}</div>
+          <div class="reason-box caution-box"><h3>Cautions</h3>${listItems(decision.caution_reasons)}</div>
+          <div class="reason-box unknown"><h3>Unknowns</h3>${listItems(decision.unknowns)}</div>
+          <div class="reason-box pass"><h3>Passes</h3>${listItems(decision.pass_reasons)}</div>
+        </div>
+        ${renderDecodedWeather(decision)}
+      </div>
+      ${errors.weather ? `<div class="station-error">${escapeHtml(errors.weather)}</div>` : ""}
+    </section>
+  `;
+}
+
+function renderRouteResult(data) {
+  const result = $("result");
+  const decisionClass = decisionClassFor(data.summary_decision);
+  result.innerHTML = `
+    <div class="decision ${escapeHtml(decisionClass)}">
+      <div>
+        <p class="eyebrow">Route Decision</p>
+        <h2>${escapeHtml(String(data.summary_decision || "unknown").toUpperCase())}</h2>
+      </div>
+      <div class="source-row">
+        ${escapeHtml((data.route || []).join(" - "))}
+        <span>${escapeHtml(data.parameters?.corridor_radius_nm ?? 10)} NM radius</span>
+        <span>${escapeHtml(data.parameters?.sample_spacing_nm ?? 25)} NM samples</span>
+      </div>
+    </div>
+    <div class="details-grid route-summary-grid">
+      <section>
+        <h3>Route Legs</h3>
+        ${renderRouteLegs(data.legs)}
+      </section>
+      <section>
+        <h3>Coverage Notes</h3>
+        ${listItems(data.coverage_notes)}
+      </section>
+    </div>
+    <div class="station-list">
+      ${(data.stations || []).map(renderRouteStation).join("")}
+    </div>
+  `;
+  result.classList.remove("hidden");
+  result.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function plannedDepartureIso() {
   const planned = $("plannedDeparture").value;
   if (!planned) return null;
@@ -276,7 +474,7 @@ function plannedDepartureIso() {
 
 async function evaluateFlight() {
   const selectedProfileId = $("profileSelect").value || $("profileId").value.trim();
-  const icao = $("icao").value.trim().toUpperCase();
+  const route = $("route").value.trim().toUpperCase();
 
   if (!selectedProfileId) {
     openSettings();
@@ -285,27 +483,44 @@ async function evaluateFlight() {
     $("result").classList.remove("hidden");
     return;
   }
-  if (!icao) {
-    setStatus("Airport required");
-    $("icao").focus();
+  if (!route) {
+    setStatus("Route required");
+    $("route").focus();
     return;
   }
 
-  localStorage.setItem("tempest:lastIcao", icao);
+  localStorage.setItem("tempest:lastRoute", route);
   localStorage.setItem("tempest:lastProfile", selectedProfileId);
   setStatus("Evaluating");
 
   try {
-    const data = await api("/evaluate", {
-      method: "POST",
-      body: JSON.stringify({
-        icao,
-        profile_id: selectedProfileId,
-        planned_departure: plannedDepartureIso(),
-        include_taf: true,
-      }),
-    });
-    renderResult(data);
+    const tokens = routeTokens(route);
+    if (tokens.length === 1) {
+      const data = await api("/evaluate", {
+        method: "POST",
+        body: JSON.stringify({
+          icao: tokens[0],
+          profile_id: selectedProfileId,
+          planned_departure: plannedDepartureIso(),
+          include_taf: true,
+        }),
+      });
+      renderResult(data);
+    } else {
+      const data = await api("/evaluate-route", {
+        method: "POST",
+        body: JSON.stringify({
+          route,
+          profile_id: selectedProfileId,
+          planned_departure: plannedDepartureIso(),
+          include_taf: true,
+          corridor_radius_nm: numberOrDefault("corridorRadius", 10),
+          sample_spacing_nm: numberOrDefault("sampleSpacing", 25),
+          groundspeed_kt: numberOrDefault("groundSpeed", 100),
+        }),
+      });
+      renderRouteResult(data);
+    }
     setStatus("Ready");
   } catch (error) {
     $("result").innerHTML = `<div class="decision no-go"><h2>${escapeHtml(error.message)}</h2></div>`;
@@ -315,7 +530,7 @@ async function evaluateFlight() {
 }
 
 async function init() {
-  $("icao").value = localStorage.getItem("tempest:lastIcao") || "KLAF";
+  $("route").value = localStorage.getItem("tempest:lastRoute") || "KLAF - KIND";
   $("plannedDeparture").value = localDateTimeValue(new Date(Date.now() + 60 * 60 * 1000));
   $("minimumsForm").addEventListener("submit", saveProfile);
   $("profileSelect").addEventListener("change", (event) => {

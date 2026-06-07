@@ -11,6 +11,9 @@ from .models import AirportRecord, EvaluationResult, MetarRecord, TafRecord
 from .timeutils import parse_aviation_time, to_local_time_string
 
 
+VARIABLE_WIND_CAUTION_THRESHOLD_KT = 10
+
+
 def _day_of_year(dt: datetime) -> int:
     return dt.timetuple().tm_yday
 
@@ -242,6 +245,21 @@ def _as_int(value: Any) -> int | None:
     return int(number)
 
 
+def _is_variable_wind_direction(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().upper() == "VRB"
+
+
+def _visibility_display(value: Any) -> str | None:
+    visibility_sm = _as_float(value)
+    if visibility_sm is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip().upper()
+        if text.startswith("P") or text.endswith("+"):
+            return f"> {visibility_sm:.0f} SM"
+    return f"{visibility_sm:.1f} SM"
+
+
 def _taf_period_bounds(period: dict[str, Any]) -> tuple[datetime | None, datetime | None]:
     start = parse_aviation_time(
         period.get("timeFrom")
@@ -301,12 +319,15 @@ def _ceiling_from_clouds(clouds: Any) -> int | None:
 def _taf_period_summary(period: dict[str, Any]) -> dict[str, Any]:
     start, end = _taf_period_bounds(period)
     clouds = period.get("clouds") or period.get("sky_condition")
+    visibility = period.get("visib") or period.get("visibility")
     return {
         "from": None if start is None else start.isoformat(),
         "to": None if end is None else end.isoformat(),
-        "visibility_sm": _as_float(period.get("visib") or period.get("visibility")),
+        "visibility_sm": _as_float(visibility),
+        "visibility_display": _visibility_display(visibility),
         "ceiling_ft_agl": _ceiling_from_clouds(clouds),
         "no_ceiling_reported": _has_reported_clouds_without_ceiling(clouds),
+        "wind_direction": period.get("wdir") or period.get("wind_direction_degrees"),
         "wind_speed_kt": _as_int(period.get("wspd") or period.get("wind_speed_kt")),
         "wind_gust_kt": _as_int(period.get("wgst") or period.get("wind_gust_kt")),
         "raw": period,
@@ -401,6 +422,16 @@ def evaluate_conditions(
         )
     )
     best_runway = _pick_best_runway(selected_runway_components)
+    selected_taf_has_variable_wind = (
+        not metar_applies
+        and selected_taf_period is not None
+        and _is_variable_wind_direction(selected_taf_period["wind_direction"])
+    )
+    selected_taf_variable_wind_speed_kt = (
+        selected_taf_period["wind_speed_kt"]
+        if selected_taf_has_variable_wind and selected_taf_period is not None
+        else None
+    )
 
     needs_weather_source = _profile_needs_weather_source(profile)
     if not metar_applies and selected_taf_period is None and needs_weather_source:
@@ -421,15 +452,18 @@ def evaluate_conditions(
             )
     elif profile.min_visibility_sm is not None and selected_taf_period is not None:
         visibility_sm = selected_taf_period["visibility_sm"]
+        visibility_display = selected_taf_period["visibility_display"] or (
+            None if visibility_sm is None else f"{visibility_sm:.1f} SM"
+        )
         if visibility_sm is None:
             unknowns.append("Visibility minimum is set, but TAF visibility is unavailable for the planned departure.")
         elif visibility_sm < profile.min_visibility_sm:
             fail_reasons.append(
-                f"TAF forecasts visibility {visibility_sm:.1f} SM below minimum {profile.min_visibility_sm:.1f} SM at planned departure."
+                f"TAF forecasts visibility {visibility_display} below minimum {profile.min_visibility_sm:.1f} SM at planned departure."
             )
         else:
             pass_reasons.append(
-                f"TAF visibility {visibility_sm:.1f} SM meets minimum {profile.min_visibility_sm:.1f} SM at planned departure."
+                f"TAF visibility {visibility_display} meets minimum {profile.min_visibility_sm:.1f} SM at planned departure."
             )
 
     if profile.min_ceiling_ft_agl is not None and metar_applies:
@@ -580,8 +614,23 @@ def evaluate_conditions(
     ):
         unknowns.append("Runway minimums are set, but airport/runway data is unavailable.")
 
+    if (
+        selected_taf_variable_wind_speed_kt is not None
+        and (profile.max_crosswind_kt is not None or profile.max_tailwind_kt is not None)
+    ):
+        variable_wind_message = (
+            f"TAF reports variable wind {selected_taf_variable_wind_speed_kt} kt at planned departure; "
+            "runway wind components were not evaluated."
+        )
+        if selected_taf_variable_wind_speed_kt > VARIABLE_WIND_CAUTION_THRESHOLD_KT:
+            caution_reasons.append(variable_wind_message)
+        else:
+            pass_reasons.append(variable_wind_message)
+
     if profile.max_crosswind_kt is not None:
-        if best_runway is None:
+        if best_runway is None and selected_taf_variable_wind_speed_kt is not None:
+            pass
+        elif best_runway is None:
             unknowns.append(f"Crosswind limit is set, but {weather_source.upper()} runway wind components are unavailable.")
         elif float(best_runway["crosswind_kt"]) > profile.max_crosswind_kt:
             fail_reasons.append(
@@ -593,7 +642,9 @@ def evaluate_conditions(
             )
 
     if profile.max_tailwind_kt is not None:
-        if best_runway is None:
+        if best_runway is None and selected_taf_variable_wind_speed_kt is not None:
+            pass
+        elif best_runway is None:
             unknowns.append(f"Tailwind limit is set, but {weather_source.upper()} runway wind components are unavailable.")
         elif float(best_runway["tailwind_kt"]) > profile.max_tailwind_kt:
             fail_reasons.append(
@@ -649,8 +700,9 @@ def evaluate_conditions(
         label = f"TAF period {period['from']} to {period['to']}"
         if profile.min_visibility_sm is not None and period["visibility_sm"] is not None:
             if period["visibility_sm"] < profile.min_visibility_sm:
+                visibility_display = period["visibility_display"] or f"{period['visibility_sm']:.1f} SM"
                 fail_reasons.append(
-                    f"{label} forecasts visibility {period['visibility_sm']:.1f} SM below minimum {profile.min_visibility_sm:.1f} SM."
+                    f"{label} forecasts visibility {visibility_display} below minimum {profile.min_visibility_sm:.1f} SM."
                 )
         if profile.min_ceiling_ft_agl is not None and period["ceiling_ft_agl"] is not None:
             if period["ceiling_ft_agl"] < profile.min_ceiling_ft_agl:

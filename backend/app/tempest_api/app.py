@@ -17,7 +17,16 @@ from tempest.evaluation import evaluate_conditions
 from tempest.metar import get_latest_metar
 from tempest.minimums import MinimumsProfile
 from tempest.minimums_store import JsonMinimumsStore, MinimumsStoreError
+from tempest.route import (
+    RoutePoint,
+    estimate_route_point_times,
+    load_airport_index,
+    parse_route,
+    route_leg_summaries,
+    sample_enroute_airports,
+)
 from tempest.taf import get_latest_taf
+from tempest.timeutils import parse_aviation_time
 from tempest.timeutils import (
     is_airport_payload_current,
     is_metar_payload_current,
@@ -45,6 +54,10 @@ def _minimums_path() -> Path:
 
 def _cache_dir() -> Path:
     return Path(os.environ.get("TEMPEST_CACHE_DIR", "data/cache"))
+
+
+def _airport_index_path() -> Path:
+    return Path(os.environ.get("TEMPEST_AIRPORT_INDEX_PATH", REPO_ROOT / "data" / "airport_index.csv"))
 
 
 def _store() -> JsonMinimumsStore:
@@ -76,6 +89,13 @@ def _optional_int(payload: dict[str, Any], key: str) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def _positive_float(payload: dict[str, Any], key: str, default: float) -> float:
+    value = _optional_float(payload, key, default)
+    if value is None or value <= 0:
+        raise HTTPException(status_code=422, detail=f"{key} must be greater than 0")
+    return value
 
 
 def _profile_from_payload(profile_id: str, payload: dict[str, Any]) -> MinimumsProfile:
@@ -185,6 +205,166 @@ def _weather_bundle(
     }
 
 
+def _load_profile(profile_id: str) -> MinimumsProfile:
+    if not profile_id:
+        raise HTTPException(status_code=422, detail="profile_id is required")
+
+    try:
+        profile = _store().get_profile(profile_id)
+    except MinimumsStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Minimums profile not found")
+    return profile
+
+
+def _evaluation_response(
+    *,
+    result: Any,
+    bundle: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "decision": result.to_dict(),
+        "sources": {
+            "metar": bundle["metar_source"],
+            "taf": bundle["taf_source"],
+            "airport": bundle["airport_source"],
+        },
+        "errors": {
+            "taf": bundle["taf_error"],
+            "airport": bundle["airport_error"],
+        },
+        "weather": {
+            "metar": bundle["metar"].to_dict(),
+            "taf": None if bundle["taf"] is None else bundle["taf"].to_dict(),
+            "airport": None if bundle["airport"] is None else bundle["airport"].to_dict(),
+            "runway_wind_components": bundle["runway_wind_components"],
+        },
+    }
+
+
+def _route_point_for_icao(icao: str, *, prefer_cache: bool) -> RoutePoint:
+    station = _validate_icao(icao)
+    cache = JsonFileCache(_cache_dir(), ttl_seconds=300)
+    now = datetime.now(UTC)
+    try:
+        airport, _source = get_airport(
+            station,
+            cache_dir=_cache_dir(),
+            prefer_cache=_prefer_airport_cache(
+                station,
+                prefer_cache=prefer_cache,
+                cache=cache,
+                now=now,
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Airport coordinate fetch failed for {station}: {exc}",
+        ) from exc
+
+    if airport.latitude is None or airport.longitude is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Airport coordinates are unavailable for {station}",
+        )
+
+    return RoutePoint(
+        icao_id=station,
+        name=airport.name,
+        latitude=airport.latitude,
+        longitude=airport.longitude,
+    )
+
+
+def _evaluate_station_for_route(
+    *,
+    station: str,
+    role: str,
+    profile: MinimumsProfile,
+    planned_time: datetime,
+    distance_from_departure_nm: float,
+    include_taf: bool,
+    taf_lookahead_hours: float,
+    fuel_reserve_min: int | None,
+    prefer_cache: bool,
+    sample: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], str | None]:
+    try:
+        bundle = _weather_bundle(
+            station,
+            include_taf=include_taf,
+            include_airport=True,
+            prefer_cache=prefer_cache,
+        )
+        result = evaluate_conditions(
+            profile=profile,
+            metar=bundle["metar"],
+            taf=bundle["taf"],
+            airport=bundle["airport"],
+            runway_wind_components=bundle["runway_wind_components"],
+            planned_departure=planned_time,
+            taf_lookahead_hours=taf_lookahead_hours,
+            fuel_reserve_min=fuel_reserve_min,
+        )
+        response = _evaluation_response(result=result, bundle=bundle)
+        response.update(
+            {
+                "icao_id": station,
+                "role": role,
+                "planned_time": planned_time.astimezone(UTC).isoformat(),
+                "distance_from_departure_nm": round(distance_from_departure_nm, 1),
+            }
+        )
+        if sample is not None:
+            response["sample"] = sample
+        return response, None
+    except HTTPException as exc:
+        message = str(exc.detail)
+    except Exception as exc:
+        message = str(exc)
+
+    decision = "no-go" if role in {"departure", "arrival"} else "caution"
+    reason_key = "fail_reasons" if decision == "no-go" else "caution_reasons"
+    decision_payload = {
+        "profile_id": profile.profile_id,
+        "airport_id": station,
+        "decision": decision,
+        "fail_reasons": [],
+        "caution_reasons": [],
+        "pass_reasons": [],
+        "unknowns": [],
+        "metar_summary": {},
+        "taf_summary": None,
+        "airport_summary": None,
+        "best_runway": None,
+    }
+    decision_payload[reason_key].append(f"{station} weather evaluation failed: {message}")
+    station_payload: dict[str, Any] = {
+        "icao_id": station,
+        "role": role,
+        "planned_time": planned_time.astimezone(UTC).isoformat(),
+        "distance_from_departure_nm": round(distance_from_departure_nm, 1),
+        "decision": decision_payload,
+        "sources": {"metar": None, "taf": None, "airport": None},
+        "errors": {"weather": message},
+        "weather": {"metar": None, "taf": None, "airport": None, "runway_wind_components": []},
+    }
+    if sample is not None:
+        station_payload["sample"] = sample
+    return station_payload, f"{station} weather fetch failed: {message}"
+
+
+def _route_summary_decision(stations: list[dict[str, Any]], coverage_notes: list[str]) -> str:
+    decisions = [station["decision"]["decision"] for station in stations]
+    if any(decision == "no-go" for decision in decisions):
+        return "no-go"
+    if coverage_notes or any(decision == "caution" for decision in decisions):
+        return "caution"
+    return "go"
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -273,15 +453,7 @@ def delete_minimums(profile_id: str) -> dict[str, Any]:
 def evaluate(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     station = _validate_icao(str(payload.get("icao", "")))
     profile_id = str(payload.get("profile_id", "")).strip()
-    if not profile_id:
-        raise HTTPException(status_code=422, detail="profile_id is required")
-
-    try:
-        profile = _store().get_profile(profile_id)
-    except MinimumsStoreError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    if profile is None:
-        raise HTTPException(status_code=404, detail="Minimums profile not found")
+    profile = _load_profile(profile_id)
 
     bundle = _weather_bundle(
         station,
@@ -303,23 +475,117 @@ def evaluate(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         fuel_reserve_min=_optional_int(payload, "fuel_reserve_min"),
     )
 
+    return _evaluation_response(result=result, bundle=bundle)
+
+
+@app.post("/evaluate-route")
+def evaluate_route(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    profile = _load_profile(str(payload.get("profile_id", "")).strip())
+
+    try:
+        route = parse_route(str(payload.get("route", "")))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if len(route) < 2:
+        raise HTTPException(status_code=422, detail="Route must include at least two ICAO airport ids")
+
+    planned_at = parse_aviation_time(payload.get("planned_departure"))
+    if planned_at is None:
+        planned_at = datetime.now(UTC)
+    planned_at = planned_at.astimezone(UTC)
+
+    corridor_radius_nm = _positive_float(payload, "corridor_radius_nm", 10.0)
+    sample_spacing_nm = _positive_float(payload, "sample_spacing_nm", 25.0)
+    groundspeed_kt = _positive_float(payload, "groundspeed_kt", 100.0)
+    taf_lookahead_hours = _optional_float(payload, "taf_lookahead_hours", 0.0) or 0.0
+    include_taf = bool(payload.get("include_taf", True))
+    prefer_cache = bool(payload.get("prefer_cache", False))
+    fuel_reserve_min = _optional_int(payload, "fuel_reserve_min")
+
+    route_points = [
+        _route_point_for_icao(station, prefer_cache=prefer_cache)
+        for station in route
+    ]
+    airport_index = load_airport_index(_airport_index_path())
+    legs = route_leg_summaries(
+        route_points=route_points,
+        planned_departure=planned_at,
+        groundspeed_kt=groundspeed_kt,
+    )
+    route_point_times = estimate_route_point_times(
+        route_points=route_points,
+        planned_departure=planned_at,
+        groundspeed_kt=groundspeed_kt,
+    )
+    samples, coverage_notes = sample_enroute_airports(
+        route_points=route_points,
+        airport_index=airport_index,
+        planned_departure=planned_at,
+        corridor_radius_nm=corridor_radius_nm,
+        sample_spacing_nm=sample_spacing_nm,
+        groundspeed_kt=groundspeed_kt,
+    )
+
+    station_defs: list[dict[str, Any]] = []
+    for index, station in enumerate(route):
+        planned_time, distance_nm = route_point_times[station]
+        role = "departure" if index == 0 else ("arrival" if index == len(route) - 1 else "enroute")
+        station_defs.append(
+            {
+                "station": station,
+                "role": role,
+                "planned_time": planned_time,
+                "distance_from_departure_nm": distance_nm,
+                "sample": None,
+            }
+        )
+    for sample in samples:
+        station_defs.append(
+            {
+                "station": sample.icao_id,
+                "role": "enroute",
+                "planned_time": sample.planned_time,
+                "distance_from_departure_nm": sample.distance_from_departure_nm,
+                "sample": {
+                    "name": sample.name,
+                    "latitude": sample.latitude,
+                    "longitude": sample.longitude,
+                    "nearest_sample_distance_nm": sample.nearest_sample_distance_nm,
+                },
+            }
+        )
+
+    station_defs.sort(key=lambda item: float(item["distance_from_departure_nm"]))
+    stations: list[dict[str, Any]] = []
+    for station_def in station_defs:
+        station_payload, coverage_note = _evaluate_station_for_route(
+            station=station_def["station"],
+            role=station_def["role"],
+            profile=profile,
+            planned_time=station_def["planned_time"],
+            distance_from_departure_nm=float(station_def["distance_from_departure_nm"]),
+            include_taf=include_taf,
+            taf_lookahead_hours=taf_lookahead_hours,
+            fuel_reserve_min=fuel_reserve_min,
+            prefer_cache=prefer_cache,
+            sample=station_def["sample"],
+        )
+        stations.append(station_payload)
+        if coverage_note:
+            coverage_notes.append(coverage_note)
+
     return {
-        "decision": result.to_dict(),
-        "sources": {
-            "metar": bundle["metar_source"],
-            "taf": bundle["taf_source"],
-            "airport": bundle["airport_source"],
+        "route": route,
+        "summary_decision": _route_summary_decision(stations, coverage_notes),
+        "parameters": {
+            "corridor_radius_nm": corridor_radius_nm,
+            "sample_spacing_nm": sample_spacing_nm,
+            "groundspeed_kt": groundspeed_kt,
+            "planned_departure": planned_at.isoformat(),
         },
-        "errors": {
-            "taf": bundle["taf_error"],
-            "airport": bundle["airport_error"],
-        },
-        "weather": {
-            "metar": bundle["metar"].to_dict(),
-            "taf": None if bundle["taf"] is None else bundle["taf"].to_dict(),
-            "airport": None if bundle["airport"] is None else bundle["airport"].to_dict(),
-            "runway_wind_components": bundle["runway_wind_components"],
-        },
+        "legs": legs,
+        "stations": stations,
+        "coverage_notes": coverage_notes,
     }
 
 
