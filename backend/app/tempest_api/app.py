@@ -18,6 +18,7 @@ from tempest.metar import get_latest_metar
 from tempest.minimums import MinimumsProfile
 from tempest.minimums_store import JsonMinimumsStore, MinimumsStoreError
 from tempest.route import (
+    AirportIndexEntry,
     RoutePoint,
     estimate_route_point_times,
     load_airport_index,
@@ -243,8 +244,33 @@ def _evaluation_response(
     }
 
 
-def _route_point_for_icao(icao: str, *, prefer_cache: bool) -> RoutePoint:
+def _route_point_from_index(
+    station: str,
+    airport_index: list[AirportIndexEntry],
+) -> RoutePoint | None:
+    for airport in airport_index:
+        if airport.icao_id == station:
+            return RoutePoint(
+                icao_id=station,
+                name=airport.name,
+                latitude=airport.latitude,
+                longitude=airport.longitude,
+            )
+    return None
+
+
+def _route_point_for_icao(
+    icao: str,
+    *,
+    prefer_cache: bool,
+    airport_index: list[AirportIndexEntry],
+    coverage_notes: list[str],
+) -> RoutePoint:
     station = _validate_icao(icao)
+    indexed = _route_point_from_index(station, airport_index)
+    if indexed is not None:
+        return indexed
+
     cache = JsonFileCache(_cache_dir(), ttl_seconds=300)
     now = datetime.now(UTC)
     try:
@@ -259,6 +285,12 @@ def _route_point_for_icao(icao: str, *, prefer_cache: bool) -> RoutePoint:
             ),
         )
     except Exception as exc:
+        indexed = _route_point_from_index(station, airport_index)
+        if indexed is not None:
+            coverage_notes.append(
+                f"Used bundled airport index coordinates for {station}; airport API coordinate fetch failed: {exc}"
+            )
+            return indexed
         raise HTTPException(
             status_code=502,
             detail=f"Airport coordinate fetch failed for {station}: {exc}",
@@ -502,11 +534,17 @@ def evaluate_route(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     prefer_cache = bool(payload.get("prefer_cache", False))
     fuel_reserve_min = _optional_int(payload, "fuel_reserve_min")
 
+    airport_index = load_airport_index(_airport_index_path())
+    coverage_notes: list[str] = []
     route_points = [
-        _route_point_for_icao(station, prefer_cache=prefer_cache)
+        _route_point_for_icao(
+            station,
+            prefer_cache=prefer_cache,
+            airport_index=airport_index,
+            coverage_notes=coverage_notes,
+        )
         for station in route
     ]
-    airport_index = load_airport_index(_airport_index_path())
     legs = route_leg_summaries(
         route_points=route_points,
         planned_departure=planned_at,
@@ -517,7 +555,7 @@ def evaluate_route(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         planned_departure=planned_at,
         groundspeed_kt=groundspeed_kt,
     )
-    samples, coverage_notes = sample_enroute_airports(
+    samples, sampling_notes = sample_enroute_airports(
         route_points=route_points,
         airport_index=airport_index,
         planned_departure=planned_at,
@@ -525,6 +563,7 @@ def evaluate_route(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         sample_spacing_nm=sample_spacing_nm,
         groundspeed_kt=groundspeed_kt,
     )
+    coverage_notes.extend(sampling_notes)
 
     station_defs: list[dict[str, Any]] = []
     for index, station in enumerate(route):

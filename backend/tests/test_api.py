@@ -247,14 +247,18 @@ def test_evaluate_rejects_negative_fuel_reserve(client):
     assert "fuel_reserve_min" in response.json()["detail"]
 
 
-def _write_route_index(path):
-    path.write_text(
-        "\n".join(
+def _write_route_index(path, *, include_endpoints: bool = False):
+    rows = ["icao_id,name,latitude,longitude,type"]
+    if include_endpoints:
+        rows.extend(
             [
-                "icao_id,name,latitude,longitude,type",
-                "KEYE,Eagle Creek Airpark,39.8307,-86.2944,airport",
+                "KLAF,Purdue University Airport,40.4123,-86.9369,airport",
+                "KIND,Indianapolis International Airport,39.7173,-86.2944,airport",
             ]
-        ),
+        )
+    rows.append("KEYE,Eagle Creek Airpark,39.8307,-86.2944,airport")
+    path.write_text(
+        "\n".join(rows),
         encoding="utf-8",
     )
 
@@ -356,3 +360,35 @@ def test_evaluate_route_endpoint_keeps_results_when_enroute_fetch_fails(client, 
     assert [station["icao_id"] for station in body["stations"]] == ["KLAF", "KEYE", "KIND"]
     assert body["stations"][1]["decision"]["decision"] == "caution"
     assert any("KEYE weather fetch failed" in note for note in body["coverage_notes"])
+
+
+def test_evaluate_route_uses_airport_index_when_endpoint_coordinate_fetch_fails(client, monkeypatch, tmp_path):
+    api_app = importlib.import_module("tempest_api.app")
+    index_path = tmp_path / "airport_index.csv"
+    _write_route_index(index_path, include_endpoints=True)
+    monkeypatch.setenv("TEMPEST_AIRPORT_INDEX_PATH", str(index_path))
+
+    def airport_for_route(icao, *args, **kwargs):
+        station = icao.strip().upper()
+        if station in {"KLAF", "KIND"}:
+            raise RuntimeError("certificate verify failed")
+        return _airport_for(station), "api"
+
+    monkeypatch.setattr(api_app, "get_airport", airport_for_route)
+    monkeypatch.setattr(api_app, "get_latest_metar", lambda icao, *args, **kwargs: (_metar(icao_id=icao.strip().upper()), "api"))
+    monkeypatch.setattr(api_app, "get_latest_taf", lambda icao, *args, **kwargs: (_taf(), "api"))
+    client.post("/minimums/primary", json={"display_name": "Primary"})
+
+    response = client.post(
+        "/evaluate-route",
+        json={
+            "route": "KLAF - KIND",
+            "profile_id": "primary",
+            "planned_departure": "2026-04-04T18:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["route"] == ["KLAF", "KIND"]
+    assert [station["icao_id"] for station in body["stations"]] == ["KLAF", "KEYE", "KIND"]
