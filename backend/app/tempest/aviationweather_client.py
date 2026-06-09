@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -22,6 +23,14 @@ from .config import (
 
 class AviationWeatherError(RuntimeError):
     """Raised when API access fails or returns unexpected data."""
+
+
+def _default_ssl_context() -> ssl.SSLContext | None:
+    try:
+        import certifi
+    except ImportError:
+        return None
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 @dataclass(slots=True)
@@ -48,7 +57,11 @@ class AviationWeatherClient:
 
         for attempt in range(1, self.max_attempts + 1):
             try:
-                with urlopen(request, timeout=self.timeout_seconds) as response:  # nosec B310
+                with urlopen(  # nosec B310
+                    request,
+                    timeout=self.timeout_seconds,
+                    context=_default_ssl_context(),
+                ) as response:
                     return response.read().decode("utf-8")
             except HTTPError as exc:
                 last_error = exc

@@ -429,3 +429,42 @@ def test_evaluate_route_index_notes_do_not_force_caution(client, monkeypatch):
     assert body["summary_decision"] == "go"
     assert body["coverage_notes"] == []
     assert body["index_notes"]
+
+
+def test_evaluate_rejects_stale_cached_metar_fallback(client, monkeypatch):
+    api_app = importlib.import_module("tempest_api.app")
+    monkeypatch.setattr(api_app, "get_latest_metar", lambda *args, **kwargs: (_metar(observed_at="2026-01-01T00:00:00Z"), "stale-cache"))
+    client.post("/minimums/primary", json={"display_name": "Primary"})
+
+    response = client.post(
+        "/evaluate",
+        json={
+            "icao": "KLAF",
+            "profile_id": "primary",
+            "planned_departure": "2026-04-04T18:00:00Z",
+        },
+    )
+
+    assert response.status_code == 502
+    assert "stale-cache" in response.json()["detail"]
+
+
+def test_evaluate_ignores_stale_cached_taf_fallback(client, monkeypatch):
+    api_app = importlib.import_module("tempest_api.app")
+    monkeypatch.setattr(api_app, "get_latest_taf", lambda *args, **kwargs: (_taf(), "stale-cache"))
+    client.post("/minimums/primary", json={"display_name": "Primary", "require_alternate_for_ifr": True})
+
+    response = client.post(
+        "/evaluate",
+        json={
+            "icao": "KLAF",
+            "profile_id": "primary",
+            "planned_departure": "2026-04-04T18:00:00Z",
+            "include_taf": True,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["weather"]["taf"] is None
+    assert "stale-cache" in body["errors"]["taf"]

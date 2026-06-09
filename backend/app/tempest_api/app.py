@@ -172,6 +172,14 @@ def _weather_bundle(
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"METAR fetch failed: {exc}") from exc
+    if metar_source != "api" and not is_metar_payload_current(metar.source_payload, now=now):
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"METAR fetch returned stale {metar_source} data for {station}; "
+                "live weather is unavailable."
+            ),
+        )
 
     taf = None
     taf_source = None
@@ -183,6 +191,13 @@ def _weather_bundle(
                 cache_dir=_cache_dir(),
                 prefer_cache=_prefer_taf_cache(station, prefer_cache=prefer_cache, cache=cache, now=now),
             )
+            if taf_source != "api" and not is_taf_payload_current(taf.source_payload, now=now):
+                taf_error = (
+                    f"TAF fetch returned stale {taf_source} data for {station}; "
+                    "live forecast is unavailable."
+                )
+                taf = None
+                taf_source = None
         except Exception as exc:
             taf_error = f"TAF fetch failed: {exc}"
 

@@ -7,6 +7,7 @@ import gzip
 import json
 import math
 import re
+import ssl
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -52,6 +53,14 @@ class EnrouteSample:
     distance_from_departure_nm: float
     planned_time: datetime
     nearest_sample_distance_nm: float
+
+
+def _default_ssl_context() -> ssl.SSLContext | None:
+    try:
+        import certifi
+    except ImportError:
+        return None
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 def parse_route(text: str) -> list[str]:
@@ -185,7 +194,11 @@ def refresh_station_cache(
         },
         method="GET",
     )
-    with urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
+    with urlopen(  # nosec B310
+        request,
+        timeout=timeout_seconds,
+        context=_default_ssl_context(),
+    ) as response:
         payload = response.read()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
