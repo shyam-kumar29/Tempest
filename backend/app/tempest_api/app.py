@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -337,6 +338,80 @@ def _route_point_for_icao(
     )
 
 
+def _profile_for_route_role(profile: MinimumsProfile, role: str) -> MinimumsProfile:
+    if role != "enroute":
+        return profile
+
+    return replace(
+        profile,
+        max_surface_wind_kt=None,
+        max_crosswind_kt=None,
+        max_gust_kt=None,
+        max_tailwind_kt=None,
+        allow_night=None,
+        min_runway_length_ft=None,
+        min_runway_width_ft=None,
+        allowed_runway_surfaces=None,
+        require_dry_runway=None,
+        min_fuel_reserve_min=None,
+        min_fuel_reserve_day_min=None,
+        min_fuel_reserve_night_min=None,
+        max_density_altitude_ft=None,
+        require_alternate_for_ifr=None,
+    )
+
+
+def _taf_period_weather_text(period: dict[str, Any]) -> str:
+    raw = period.get("raw")
+    sources = [period.get("wxString"), period.get("wx_string"), period.get("wx")]
+    if isinstance(raw, dict):
+        sources.extend([raw.get("wxString"), raw.get("wx_string"), raw.get("wx")])
+    return " ".join(str(value) for value in sources if value)
+
+
+def _weather_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    for token in text.upper().replace(",", " ").split():
+        cleaned = token.strip("+-")
+        if cleaned:
+            tokens.append(cleaned)
+    return tokens
+
+
+def _add_enroute_weather_hazards(result: Any) -> None:
+    weather_texts: list[str] = []
+    weather_texts.append(str(result.metar_summary.get("wx_string") or ""))
+    if result.taf_summary and result.taf_summary.get("evaluated_periods"):
+        weather_texts.extend(
+            _taf_period_weather_text(period)
+            for period in result.taf_summary["evaluated_periods"]
+            if isinstance(period, dict)
+        )
+
+    tokens = _weather_tokens(" ".join(weather_texts))
+    has_thunderstorm = any("TS" in token for token in tokens)
+    has_precipitation = any(
+        code in token
+        for token in tokens
+        for code in ("RA", "SN", "DZ", "PL", "GR", "GS", "UP", "IC")
+    )
+
+    if has_thunderstorm:
+        result.caution_reasons.append(
+            "Enroute weather reports thunderstorms near the planned overflight."
+        )
+    elif has_precipitation:
+        result.caution_reasons.append(
+            "Enroute weather reports precipitation near the planned overflight."
+        )
+
+    result.pass_reasons.append(
+        "Enroute station evaluated for route weather only; runway suitability and runway wind limits are not applied."
+    )
+    if result.decision == "go" and result.caution_reasons:
+        result.decision = "caution"
+
+
 def _evaluate_station_for_route(
     *,
     station: str,
@@ -357,16 +432,19 @@ def _evaluate_station_for_route(
             include_airport=True,
             prefer_cache=prefer_cache,
         )
+        station_profile = _profile_for_route_role(profile, role)
         result = evaluate_conditions(
-            profile=profile,
+            profile=station_profile,
             metar=bundle["metar"],
             taf=bundle["taf"],
             airport=bundle["airport"],
             runway_wind_components=bundle["runway_wind_components"],
             planned_departure=planned_time,
             taf_lookahead_hours=taf_lookahead_hours,
-            fuel_reserve_min=fuel_reserve_min,
+            fuel_reserve_min=None if role == "enroute" else fuel_reserve_min,
         )
+        if role == "enroute":
+            _add_enroute_weather_hazards(result)
         response = _evaluation_response(result=result, bundle=bundle)
         response.update(
             {

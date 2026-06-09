@@ -365,6 +365,141 @@ def test_evaluate_route_endpoint_keeps_results_when_enroute_fetch_fails(client, 
     assert any("KEYE weather fetch failed" in note for note in body["coverage_notes"])
 
 
+def test_evaluate_route_ignores_enroute_runway_minimums(client, monkeypatch, tmp_path):
+    api_app = importlib.import_module("tempest_api.app")
+    index_path = tmp_path / "airport_index.csv"
+    _write_route_index(index_path)
+    monkeypatch.setenv("TEMPEST_AIRPORT_INDEX_PATH", str(index_path))
+
+    def airport_for_route(icao, *args, **kwargs):
+        airport = _airport_for(icao.strip().upper())
+        if airport.icao_id == "KEYE":
+            airport.runways = [RunwayRecord("22", 220.0, 6600, 50, "asphalt")]
+        return airport, "api"
+
+    monkeypatch.setattr(api_app, "get_airport", airport_for_route)
+    monkeypatch.setattr(api_app, "get_latest_metar", lambda icao, *args, **kwargs: (_metar(icao_id=icao.strip().upper()), "api"))
+    monkeypatch.setattr(api_app, "get_latest_taf", lambda icao, *args, **kwargs: (_taf(), "api"))
+    client.post(
+        "/minimums/primary",
+        json={"display_name": "Primary", "min_runway_width_ft": 100},
+    )
+
+    response = client.post(
+        "/evaluate-route",
+        json={
+            "route": "KLAF - KIND",
+            "profile_id": "primary",
+            "planned_departure": "2026-04-04T18:00:00Z",
+            "corridor_radius_nm": 10,
+            "sample_spacing_nm": 25,
+        },
+    )
+
+    assert response.status_code == 200
+    enroute = response.json()["stations"][1]["decision"]
+    assert enroute["decision"] == "go"
+    assert not any("runway" in reason.lower() for reason in enroute["fail_reasons"])
+    assert any("runway suitability" in reason for reason in enroute["pass_reasons"])
+
+
+def test_evaluate_route_ignores_enroute_taf_runway_wind_unknowns(client, monkeypatch, tmp_path):
+    api_app = importlib.import_module("tempest_api.app")
+    index_path = tmp_path / "airport_index.csv"
+    _write_route_index(index_path)
+    monkeypatch.setenv("TEMPEST_AIRPORT_INDEX_PATH", str(index_path))
+    monkeypatch.setattr(api_app, "get_airport", lambda icao, *args, **kwargs: (_airport_for(icao.strip().upper()), "api"))
+    monkeypatch.setattr(api_app, "get_latest_metar", lambda icao, *args, **kwargs: (_metar(icao_id=icao.strip().upper()), "api"))
+
+    def variable_wind_taf(icao, *args, **kwargs):
+        taf = _taf()
+        taf.icao_id = icao.strip().upper()
+        taf.forecast = [
+            {
+                "timeFrom": "2026-04-04T20:00:00Z",
+                "timeTo": "2026-04-04T22:00:00Z",
+                "wdir": "VRB",
+                "wspd": 6,
+                "visib": 10,
+                "clouds": [{"cover": "BKN", "base": 3000}],
+            }
+        ]
+        return taf, "api"
+
+    monkeypatch.setattr(api_app, "get_latest_taf", variable_wind_taf)
+    client.post(
+        "/minimums/primary",
+        json={
+            "display_name": "Primary",
+            "min_visibility_sm": 5,
+            "min_ceiling_ft_agl": 2500,
+            "max_crosswind_kt": 10,
+            "max_tailwind_kt": 5,
+        },
+    )
+
+    response = client.post(
+        "/evaluate-route",
+        json={
+            "route": "KLAF - KIND",
+            "profile_id": "primary",
+            "planned_departure": "2026-04-04T20:00:00Z",
+            "corridor_radius_nm": 10,
+            "sample_spacing_nm": 25,
+        },
+    )
+
+    assert response.status_code == 200
+    enroute = response.json()["stations"][1]["decision"]
+    assert enroute["decision"] == "go"
+    unknown_text = " ".join(enroute["unknowns"]).lower()
+    assert "crosswind" not in unknown_text
+    assert "tailwind" not in unknown_text
+
+
+def test_evaluate_route_marks_enroute_storms_as_caution(client, monkeypatch, tmp_path):
+    api_app = importlib.import_module("tempest_api.app")
+    index_path = tmp_path / "airport_index.csv"
+    _write_route_index(index_path)
+    monkeypatch.setenv("TEMPEST_AIRPORT_INDEX_PATH", str(index_path))
+    monkeypatch.setattr(api_app, "get_airport", lambda icao, *args, **kwargs: (_airport_for(icao.strip().upper()), "api"))
+
+    def metar_for_route(icao, *args, **kwargs):
+        station = icao.strip().upper()
+        if station == "KEYE":
+            return _metar(
+                icao_id=station,
+                raw_text="KEYE 041800Z 22012KT 10SM TSRA BKN030 20/10 A2992",
+                wx_string="TSRA",
+            ), "api"
+        return _metar(icao_id=station), "api"
+
+    monkeypatch.setattr(api_app, "get_latest_metar", metar_for_route)
+    monkeypatch.setattr(api_app, "get_latest_taf", lambda icao, *args, **kwargs: (_taf(), "api"))
+    client.post(
+        "/minimums/primary",
+        json={"display_name": "Primary", "min_visibility_sm": 5, "min_ceiling_ft_agl": 2500},
+    )
+
+    response = client.post(
+        "/evaluate-route",
+        json={
+            "route": "KLAF - KIND",
+            "profile_id": "primary",
+            "planned_departure": "2026-04-04T18:00:00Z",
+            "corridor_radius_nm": 10,
+            "sample_spacing_nm": 25,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    enroute = body["stations"][1]["decision"]
+    assert body["summary_decision"] == "caution"
+    assert enroute["decision"] == "caution"
+    assert any("thunderstorms" in reason for reason in enroute["caution_reasons"])
+
+
 def test_evaluate_route_uses_airport_index_when_endpoint_coordinate_fetch_fails(client, monkeypatch, tmp_path):
     api_app = importlib.import_module("tempest_api.app")
     index_path = tmp_path / "airport_index.csv"

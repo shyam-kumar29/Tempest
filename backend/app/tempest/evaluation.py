@@ -748,6 +748,7 @@ def evaluate_conditions(
         "wind_direction_degrees": metar.wind_direction_degrees,
         "wind_speed_kt": metar.wind_speed_kt,
         "wind_gust_kt": metar.wind_gust_kt,
+        "wx_string": metar.wx_string,
         "observed_at": metar.observed_at,
         "observed_at_local": to_local_time_string(metar.observed_at),
         "planned_departure": planned_at.isoformat(),
