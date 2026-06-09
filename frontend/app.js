@@ -432,6 +432,7 @@ function renderRouteStation(station) {
 function renderRouteResult(data) {
   const result = $("result");
   const decisionClass = decisionClassFor(data.summary_decision);
+  const routeNotes = [...(data.coverage_notes || []), ...(data.index_notes || [])];
   result.innerHTML = `
     <div class="decision ${escapeHtml(decisionClass)}">
       <div>
@@ -450,8 +451,8 @@ function renderRouteResult(data) {
         ${renderRouteLegs(data.legs)}
       </section>
       <section>
-        <h3>Coverage Notes</h3>
-        ${listItems(data.coverage_notes)}
+        <h3>Route Notes</h3>
+        ${listItems(routeNotes)}
       </section>
     </div>
     <div class="station-list">

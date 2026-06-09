@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from tempest.minimums import MinimumsProfile
 from tempest.models import AirportRecord, MetarRecord, RunwayRecord, TafRecord
+from tempest.route import AirportIndexEntry
 
 
 def _metar(**overrides):
@@ -96,6 +97,8 @@ def _taf():
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("TEMPEST_MINIMUMS_PATH", str(tmp_path / "profiles.json"))
     monkeypatch.setenv("TEMPEST_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("TEMPEST_FETCH_STATION_CACHE", "0")
+    monkeypatch.setenv("TEMPEST_STATION_INDEX_PATH", str(tmp_path / "station_index.csv"))
 
     api_app = importlib.import_module("tempest_api.app")
 
@@ -392,3 +395,37 @@ def test_evaluate_route_uses_airport_index_when_endpoint_coordinate_fetch_fails(
     body = response.json()
     assert body["route"] == ["KLAF", "KIND"]
     assert [station["icao_id"] for station in body["stations"]] == ["KLAF", "KEYE", "KIND"]
+
+
+def test_evaluate_route_index_notes_do_not_force_caution(client, monkeypatch):
+    api_app = importlib.import_module("tempest_api.app")
+    monkeypatch.setattr(
+        api_app,
+        "load_route_station_index",
+        lambda **kwargs: (
+            [
+                AirportIndexEntry("KAAA", "Start", 0.0, 0.0, "METAR"),
+                AirportIndexEntry("KBBB", "End", 0.0, 0.2, "METAR"),
+            ],
+            ["Station cache refresh failed; using local station index: certificate verify failed"],
+        ),
+    )
+    monkeypatch.setattr(api_app, "get_latest_metar", lambda icao, *args, **kwargs: (_metar(icao_id=icao.strip().upper()), "api"))
+    monkeypatch.setattr(api_app, "get_latest_taf", lambda icao, *args, **kwargs: (_taf(), "api"))
+    monkeypatch.setattr(api_app, "get_airport", lambda icao, *args, **kwargs: (_airport(), "api"))
+    client.post("/minimums/primary", json={"display_name": "Primary"})
+
+    response = client.post(
+        "/evaluate-route",
+        json={
+            "route": "KAAA - KBBB",
+            "profile_id": "primary",
+            "planned_departure": "2026-04-04T18:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary_decision"] == "go"
+    assert body["coverage_notes"] == []
+    assert body["index_notes"]

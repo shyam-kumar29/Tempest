@@ -3,11 +3,24 @@
 from __future__ import annotations
 
 import csv
+import gzip
+import json
 import math
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+from .config import (
+    DEFAULT_API_TIMEOUT_SECONDS,
+    DEFAULT_STATION_CACHE_TTL_SECONDS,
+    DEFAULT_USER_AGENT,
+    STATIONS_CACHE_URL,
+)
 
 
 EARTH_RADIUS_NM = 3440.065
@@ -55,27 +68,160 @@ def parse_route(text: str) -> list[str]:
 
 def load_airport_index(path: Path) -> list[AirportIndexEntry]:
     entries: list[AirportIndexEntry] = []
+    if not path.exists():
+        return entries
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
-            icao_id = str(row.get("icao_id") or "").strip().upper()
-            if len(icao_id) != 4 or not icao_id.isalpha():
-                continue
-            try:
-                latitude = float(str(row.get("latitude") or "").strip())
-                longitude = float(str(row.get("longitude") or "").strip())
-            except ValueError:
-                continue
-            entries.append(
-                AirportIndexEntry(
-                    icao_id=icao_id,
-                    name=str(row.get("name") or icao_id).strip(),
-                    latitude=latitude,
-                    longitude=longitude,
-                    airport_type=str(row.get("type") or "").strip(),
-                )
+            entry = _airport_index_entry_from_mapping(
+                row,
+                icao_key="icao_id",
+                name_key="name",
+                latitude_key="latitude",
+                longitude_key="longitude",
+                type_key="type",
             )
+            if entry is not None:
+                entries.append(entry)
     return entries
+
+
+def _airport_index_entry_from_mapping(
+    item: dict[str, Any],
+    *,
+    icao_key: str,
+    name_key: str,
+    latitude_key: str,
+    longitude_key: str,
+    type_key: str,
+) -> AirportIndexEntry | None:
+    icao_id = str(item.get(icao_key) or "").strip().upper()
+    if len(icao_id) != 4 or not icao_id.isalpha():
+        return None
+    try:
+        latitude = float(str(item.get(latitude_key) or "").strip())
+        longitude = float(str(item.get(longitude_key) or "").strip())
+    except ValueError:
+        return None
+    return AirportIndexEntry(
+        icao_id=icao_id,
+        name=str(item.get(name_key) or icao_id).strip(),
+        latitude=latitude,
+        longitude=longitude,
+        airport_type=str(item.get(type_key) or "").strip(),
+    )
+
+
+def _station_cache_entry(item: dict[str, Any]) -> AirportIndexEntry | None:
+    site_types = item.get("siteType") or []
+    if not isinstance(site_types, list):
+        site_types = []
+    normalized_site_types = {str(site_type).strip().upper() for site_type in site_types}
+    if not ({"METAR", "TAF"} & normalized_site_types):
+        return None
+    return _airport_index_entry_from_mapping(
+        {
+            "icao_id": item.get("icaoId"),
+            "name": item.get("site"),
+            "latitude": item.get("lat"),
+            "longitude": item.get("lon"),
+            "type": "|".join(sorted(normalized_site_types)),
+        },
+        icao_key="icao_id",
+        name_key="name",
+        latitude_key="latitude",
+        longitude_key="longitude",
+        type_key="type",
+    )
+
+
+def load_station_cache_index(path: Path) -> list[AirportIndexEntry]:
+    """Load AviationWeather stations.cache.json.gz into route index entries."""
+
+    if not path.exists():
+        return []
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        raw = json.load(handle)
+    if not isinstance(raw, list):
+        return []
+
+    entries: list[AirportIndexEntry] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        entry = _station_cache_entry(item)
+        if entry is not None:
+            entries.append(entry)
+    return entries
+
+
+def merge_airport_indexes(*indexes: list[AirportIndexEntry]) -> list[AirportIndexEntry]:
+    merged: dict[str, AirportIndexEntry] = {}
+    for index in indexes:
+        for airport in index:
+            if airport.icao_id not in merged:
+                merged[airport.icao_id] = airport
+    return sorted(merged.values(), key=lambda item: item.icao_id)
+
+
+def _station_cache_is_fresh(path: Path, ttl_seconds: int) -> bool:
+    if not path.exists():
+        return False
+    return (time.time() - path.stat().st_mtime) <= ttl_seconds
+
+
+def refresh_station_cache(
+    *,
+    path: Path,
+    url: str = STATIONS_CACHE_URL,
+    user_agent: str = DEFAULT_USER_AGENT,
+    timeout_seconds: int = DEFAULT_API_TIMEOUT_SECONDS,
+) -> None:
+    request = Request(
+        url=url,
+        headers={
+            "Accept": "application/gzip, application/octet-stream",
+            "User-Agent": user_agent,
+        },
+        method="GET",
+    )
+    with urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
+        payload = response.read()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+
+
+def load_route_station_index(
+    *,
+    cache_dir: Path,
+    bundled_station_index_path: Path,
+    fallback_airport_index_path: Path,
+    allow_refresh: bool = True,
+    ttl_seconds: int = DEFAULT_STATION_CACHE_TTL_SECONDS,
+    user_agent: str = DEFAULT_USER_AGENT,
+) -> tuple[list[AirportIndexEntry], list[str]]:
+    """Load the best available route station index plus non-fatal refresh notes."""
+
+    notes: list[str] = []
+    station_cache_path = cache_dir / "stations.cache.json.gz"
+
+    if allow_refresh and not _station_cache_is_fresh(station_cache_path, ttl_seconds):
+        try:
+            refresh_station_cache(path=station_cache_path, user_agent=user_agent)
+        except (HTTPError, URLError, OSError) as exc:
+            notes.append(f"Station cache refresh failed; using local station index: {exc}")
+
+    station_cache_index = load_station_cache_index(station_cache_path)
+    bundled_station_index = load_airport_index(bundled_station_index_path)
+    fallback_airport_index = load_airport_index(fallback_airport_index_path)
+    merged = merge_airport_indexes(
+        station_cache_index,
+        bundled_station_index,
+        fallback_airport_index,
+    )
+    if not merged:
+        notes.append("No route station index entries are available.")
+    return merged, notes
 
 
 def haversine_nm(

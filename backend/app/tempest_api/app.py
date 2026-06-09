@@ -21,7 +21,7 @@ from tempest.route import (
     AirportIndexEntry,
     RoutePoint,
     estimate_route_point_times,
-    load_airport_index,
+    load_route_station_index,
     parse_route,
     route_leg_summaries,
     sample_enroute_airports,
@@ -59,6 +59,18 @@ def _cache_dir() -> Path:
 
 def _airport_index_path() -> Path:
     return Path(os.environ.get("TEMPEST_AIRPORT_INDEX_PATH", REPO_ROOT / "data" / "airport_index.csv"))
+
+
+def _station_index_path() -> Path:
+    return Path(os.environ.get("TEMPEST_STATION_INDEX_PATH", REPO_ROOT / "data" / "station_index.csv"))
+
+
+def _fetch_station_cache() -> bool:
+    return os.environ.get("TEMPEST_FETCH_STATION_CACHE", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
 
 
 def _store() -> JsonMinimumsStore:
@@ -534,8 +546,15 @@ def evaluate_route(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     prefer_cache = bool(payload.get("prefer_cache", False))
     fuel_reserve_min = _optional_int(payload, "fuel_reserve_min")
 
-    airport_index = load_airport_index(_airport_index_path())
+    airport_index, index_notes = load_route_station_index(
+        cache_dir=_cache_dir(),
+        bundled_station_index_path=_station_index_path(),
+        fallback_airport_index_path=_airport_index_path(),
+        allow_refresh=_fetch_station_cache(),
+    )
     coverage_notes: list[str] = []
+    if not airport_index:
+        coverage_notes.extend(index_notes)
     route_points = [
         _route_point_for_icao(
             station,
@@ -625,6 +644,7 @@ def evaluate_route(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         "legs": legs,
         "stations": stations,
         "coverage_notes": coverage_notes,
+        "index_notes": index_notes,
     }
 
 
