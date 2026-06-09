@@ -387,6 +387,46 @@ def test_evaluate_conditions_treats_low_variable_taf_wind_as_info() -> None:
     assert any("variable wind 3 kt" in reason for reason in result.pass_reasons)
 
 
+def test_evaluate_conditions_treats_light_taf_wind_without_runway_geometry_as_info() -> None:
+    profile = MinimumsProfile(
+        profile_id="primary",
+        display_name="Primary",
+        max_crosswind_kt=12,
+        max_tailwind_kt=7,
+    )
+    taf = TafRecord(
+        icao_id="KSAC",
+        raw_text="TAF KSAC 090320Z 0904/1005 18005KT P6SM BKN050",
+        issued_at="2026-06-09T03:20:00Z",
+        valid_from="2026-06-09T04:00:00Z",
+        valid_to="2026-06-10T05:00:00Z",
+        station_name=None,
+        forecast=[
+            {
+                "timeFrom": "2026-06-09T04:00:00Z",
+                "timeTo": "2026-06-10T05:00:00Z",
+                "wdir": 180,
+                "wspd": 5,
+                "visib": 10,
+                "clouds": [{"cover": "BKN", "base": 5000}],
+            }
+        ],
+        source_payload={},
+    )
+
+    result = evaluate_conditions(
+        profile=profile,
+        metar=_metar(observed_at="2026-06-09T02:00:00Z"),
+        taf=taf,
+        airport=None,
+        planned_departure="2026-06-09T05:39:00Z",
+    )
+
+    assert result.decision == "go"
+    assert not result.unknowns
+    assert any("TAF wind 5 kt is light" in reason for reason in result.pass_reasons)
+
+
 def test_evaluate_conditions_treats_strong_variable_taf_wind_as_caution() -> None:
     profile = MinimumsProfile(
         profile_id="primary",

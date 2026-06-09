@@ -164,3 +164,23 @@ def test_sample_enroute_airports_reports_missing_coverage() -> None:
     assert samples == []
     assert len(notes) == 2
     assert "No reporting airport" in notes[0]
+
+
+def test_sample_enroute_airports_uses_nearby_station_for_sparse_coverage() -> None:
+    samples, notes = sample_enroute_airports(
+        route_points=[
+            RoutePoint("KSAC", "Sacramento Exec", 38.50658, -121.49604),
+            RoutePoint("KCIC", "Chico Muni", 39.79875, -121.85797),
+        ],
+        airport_index=[
+            AirportIndexEntry("KMYV", "Marysville/Yuba Cnty", 39.10204, -121.56883, "METAR"),
+            AirportIndexEntry("KOVE", "Oroville Muni", 39.4943, -121.6225, "METAR"),
+        ],
+        planned_departure=datetime(2026, 6, 9, 5, 39, tzinfo=UTC),
+        corridor_radius_nm=10.0,
+        sample_spacing_nm=25.0,
+        groundspeed_kt=100.0,
+    )
+
+    assert [sample.icao_id for sample in samples] == ["KMYV", "KOVE"]
+    assert any("using nearest station KMYV" in note for note in notes)

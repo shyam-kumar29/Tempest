@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,13 @@ def _as_int(value: Any) -> int | None:
         return int(float(value))
     except (TypeError, ValueError):
         return None
+
+
+def _first_not_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
 
 
 def _pick(payload: dict[str, Any], *candidates: str) -> Any:
@@ -92,6 +100,78 @@ def _visibility_from_raw(raw_text: str) -> float | None:
     return None
 
 
+def _observed_at_from_raw(raw_text: str, *, now: datetime | None = None) -> str | None:
+    match = re.search(r"\b(\d{2})(\d{2})(\d{2})Z\b", raw_text.upper())
+    if not match:
+        return None
+
+    now = (now or datetime.now(UTC)).astimezone(UTC)
+    day = int(match.group(1))
+    hour = int(match.group(2))
+    minute = int(match.group(3))
+
+    year = now.year
+    month = now.month
+    if day > now.day + 15:
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+    elif day < now.day - 15:
+        month += 1
+        if month == 13:
+            month = 1
+            year += 1
+
+    try:
+        return datetime(year, month, day, hour, minute, tzinfo=UTC).isoformat().replace(
+            "+00:00", "Z"
+        )
+    except ValueError:
+        return None
+
+
+def _wind_from_raw(raw_text: str) -> tuple[int | None, int | None, int | None]:
+    match = re.search(r"\b(?:(\d{3})|VRB)(\d{2,3})(?:G(\d{2,3}))?KT\b", raw_text.upper())
+    if not match:
+        return (None, None, None)
+    return (
+        _as_int(match.group(1)),
+        _as_int(match.group(2)),
+        _as_int(match.group(3)),
+    )
+
+
+def _temperature_dewpoint_from_raw(raw_text: str) -> tuple[float | None, float | None]:
+    match = re.search(r"\b(M?\d{2})/(M?\d{2})\b", raw_text.upper())
+    if not match:
+        return (None, None)
+
+    def parse_temp(value: str) -> float:
+        return -float(value[1:]) if value.startswith("M") else float(value)
+
+    return (parse_temp(match.group(1)), parse_temp(match.group(2)))
+
+
+def _altimeter_from_raw(raw_text: str) -> float | None:
+    match = re.search(r"\bA(\d{4})\b", raw_text.upper())
+    if not match:
+        return None
+    return round(float(match.group(1)) / 100.0, 2)
+
+
+def _wx_string_from_raw(raw_text: str) -> str | None:
+    weather_tokens: list[str] = []
+    for token in raw_text.upper().split():
+        if re.fullmatch(
+            r"[-+]?((VC)?(MI|PR|BC|DR|BL|SH|TS|FZ)?"
+            r"(DZ|RA|SN|SG|IC|PL|GR|GS|UP)|BR|FG|FU|VA|DU|SA|HZ|PY|PO|SQ|FC|SS|DS)+",
+            token,
+        ):
+            weather_tokens.append(token)
+    return " ".join(weather_tokens) or None
+
+
 def _sky_cover_from_raw(raw_text: str) -> list[dict[str, Any]]:
     layers: list[dict[str, Any]] = []
     for token in raw_text.upper().split():
@@ -130,26 +210,34 @@ def normalize_metar(payload: dict[str, Any]) -> MetarRecord:
     visibility_sm = _as_float(_pick(payload, "visib", "visibility_statute_mi"))
     if visibility_sm is None:
         visibility_sm = _visibility_from_raw(raw_text)
+    raw_wdir, raw_wspd, raw_wgst = _wind_from_raw(raw_text)
+    raw_temp, raw_dewp = _temperature_dewpoint_from_raw(raw_text)
+    payload_wdir = _as_int(_pick(payload, "wdir", "wind_dir_degrees"))
+    payload_wspd = _as_int(_pick(payload, "wspd", "wind_speed_kt"))
+    payload_wgst = _as_int(_pick(payload, "wgst", "wind_gust_kt"))
+    payload_temp = _as_float(_pick(payload, "temp", "temp_c"))
+    payload_dewp = _as_float(_pick(payload, "dewp", "dewpoint_c"))
 
     return MetarRecord(
         icao_id=icao_id,
         raw_text=raw_text,
-        observed_at=_pick(payload, "obsTime", "observation_time", "reportTime"),
+        observed_at=_pick(payload, "obsTime", "observation_time", "reportTime")
+        or _observed_at_from_raw(raw_text),
         station_name=_pick(payload, "name", "station_name"),
         latitude=_as_float(_pick(payload, "lat", "latitude")),
         longitude=_as_float(_pick(payload, "lon", "longitude")),
         elevation_m=_as_float(_pick(payload, "elev", "elevation_m")),
         flight_category=_pick(payload, "fltCat", "flight_category"),
-        wind_direction_degrees=_as_int(_pick(payload, "wdir", "wind_dir_degrees")),
-        wind_speed_kt=_as_int(_pick(payload, "wspd", "wind_speed_kt")),
-        wind_gust_kt=_as_int(_pick(payload, "wgst", "wind_gust_kt")),
+        wind_direction_degrees=_first_not_none(payload_wdir, raw_wdir),
+        wind_speed_kt=_first_not_none(payload_wspd, raw_wspd),
+        wind_gust_kt=_first_not_none(payload_wgst, raw_wgst),
         visibility_sm=visibility_sm,
-        temperature_c=_as_float(_pick(payload, "temp", "temp_c")),
-        dewpoint_c=_as_float(_pick(payload, "dewp", "dewpoint_c")),
-        altimeter_in_hg=_altimeter_to_inhg(payload),
+        temperature_c=_first_not_none(payload_temp, raw_temp),
+        dewpoint_c=_first_not_none(payload_dewp, raw_dewp),
+        altimeter_in_hg=_first_not_none(_altimeter_to_inhg(payload), _altimeter_from_raw(raw_text)),
         sea_level_pressure_mb=_as_float(_pick(payload, "slp", "sea_level_pressure_mb")),
         sky_cover=sky_cover,
-        wx_string=_pick(payload, "wxString", "wx_string"),
+        wx_string=_pick(payload, "wxString", "wx_string") or _wx_string_from_raw(raw_text),
         source_payload=payload,
     )
 

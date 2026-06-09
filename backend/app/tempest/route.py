@@ -373,6 +373,10 @@ def sample_enroute_airports(
     selected: dict[str, EnrouteSample] = {}
     coverage_notes: list[str] = []
     cumulative_distance_nm = 0.0
+    sparse_coverage_radius_nm = max(
+        corridor_radius_nm,
+        min(sample_spacing_nm / 2.0, corridor_radius_nm + 5.0),
+    )
 
     for start, end in zip(route_points, route_points[1:], strict=False):
         leg_distance_nm = haversine_nm(start.latitude, start.longitude, end.latitude, end.longitude)
@@ -393,10 +397,36 @@ def sample_enroute_airports(
                 exclude_icao_ids=exclude,
             )
             if nearest is None:
-                coverage_notes.append(
-                    f"No reporting airport found within {corridor_radius_nm:g} NM near "
-                    f"{round(distance_from_departure_nm, 1)} NM from departure."
+                nearest = nearest_airport(
+                    latitude=latitude,
+                    longitude=longitude,
+                    airport_index=airport_index,
+                    radius_nm=sparse_coverage_radius_nm,
+                    exclude_icao_ids=exclude,
                 )
+                if nearest is None:
+                    coverage_notes.append(
+                        f"No reporting airport found within {corridor_radius_nm:g} NM near "
+                        f"{round(distance_from_departure_nm, 1)} NM from departure."
+                    )
+                else:
+                    airport, sample_offset_nm = nearest
+                    coverage_notes.append(
+                        f"No reporting airport found within {corridor_radius_nm:g} NM near "
+                        f"{round(distance_from_departure_nm, 1)} NM from departure; "
+                        f"using nearest station {airport.icao_id} at {round(sample_offset_nm, 1)} NM."
+                    )
+                    if airport.icao_id not in selected:
+                        selected[airport.icao_id] = EnrouteSample(
+                            icao_id=airport.icao_id,
+                            name=airport.name,
+                            latitude=airport.latitude,
+                            longitude=airport.longitude,
+                            distance_from_departure_nm=round(distance_from_departure_nm, 1),
+                            planned_time=planned_time,
+                            nearest_sample_distance_nm=round(sample_offset_nm, 1),
+                        )
+                    exclude.add(airport.icao_id)
             else:
                 airport, sample_offset_nm = nearest
                 if airport.icao_id not in selected:

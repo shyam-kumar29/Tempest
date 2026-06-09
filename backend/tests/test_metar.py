@@ -62,3 +62,22 @@ def test_normalize_metar_falls_back_to_raw_visibility_and_clear_sky() -> None:
 
     assert record.visibility_sm == 10.0
     assert record.sky_cover == [{"cover": "CLR", "base": None}]
+
+
+def test_normalize_metar_parses_core_fields_from_raw_text() -> None:
+    payload = {
+        "icaoId": "KCIC",
+        "rawOb": "KCIC 090447Z AUTO 18005KT 10SM -RA BKN050 18/12 A2998",
+    }
+
+    record = normalize_metar(payload)
+
+    assert record.observed_at and record.observed_at.endswith("04:47:00Z")
+    assert record.wind_direction_degrees == 180
+    assert record.wind_speed_kt == 5
+    assert record.visibility_sm == 10.0
+    assert record.wx_string == "-RA"
+    assert record.sky_cover == [{"cover": "BKN", "base": 5000}]
+    assert record.temperature_c == 18.0
+    assert record.dewpoint_c == 12.0
+    assert record.altimeter_in_hg == 29.98

@@ -432,6 +432,11 @@ def evaluate_conditions(
         if selected_taf_has_variable_wind and selected_taf_period is not None
         else None
     )
+    selected_wind_speed_kt = (
+        metar.wind_speed_kt
+        if metar_applies
+        else (None if selected_taf_period is None else selected_taf_period["wind_speed_kt"])
+    )
 
     needs_weather_source = _profile_needs_weather_source(profile)
     if not metar_applies and selected_taf_period is None and needs_weather_source:
@@ -627,8 +632,27 @@ def evaluate_conditions(
         else:
             pass_reasons.append(variable_wind_message)
 
+    missing_component_light_wind_handled = False
+    if (
+        best_runway is None
+        and selected_taf_variable_wind_speed_kt is None
+        and selected_wind_speed_kt is not None
+        and (profile.max_crosswind_kt is not None or profile.max_tailwind_kt is not None)
+    ):
+        unavailable_message = (
+            f"{weather_source.upper()} wind {selected_wind_speed_kt} kt is light; "
+            "runway wind components were not evaluated because runway geometry is unavailable."
+        )
+        if selected_wind_speed_kt > VARIABLE_WIND_CAUTION_THRESHOLD_KT:
+            caution_reasons.append(unavailable_message)
+        else:
+            pass_reasons.append(unavailable_message)
+        missing_component_light_wind_handled = True
+
     if profile.max_crosswind_kt is not None:
         if best_runway is None and selected_taf_variable_wind_speed_kt is not None:
+            pass
+        elif best_runway is None and missing_component_light_wind_handled:
             pass
         elif best_runway is None:
             unknowns.append(f"Crosswind limit is set, but {weather_source.upper()} runway wind components are unavailable.")
@@ -643,6 +667,8 @@ def evaluate_conditions(
 
     if profile.max_tailwind_kt is not None:
         if best_runway is None and selected_taf_variable_wind_speed_kt is not None:
+            pass
+        elif best_runway is None and missing_component_light_wind_handled:
             pass
         elif best_runway is None:
             unknowns.append(f"Tailwind limit is set, but {weather_source.upper()} runway wind components are unavailable.")

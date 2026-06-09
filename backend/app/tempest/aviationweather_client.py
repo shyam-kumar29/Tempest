@@ -106,10 +106,16 @@ class AviationWeatherClient:
         )
 
         body = self._read_with_retries(request=request, station=station)
+        if not body.strip():
+            return []
 
         try:
             parsed = json.loads(body)
         except json.JSONDecodeError as exc:
+            raw_lines = [line.strip() for line in body.strip().splitlines() if line.strip()]
+            raw_text = raw_lines[0] if raw_lines else ""
+            if product == "METAR" and raw_text.upper().startswith(station):
+                return [{"icaoId": station, "rawOb": raw_text}]
             raise AviationWeatherError(
                 f"AviationWeather returned invalid JSON for {product}"
             ) from exc
