@@ -12,6 +12,13 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from tempest.ai import (
+    AIBriefingError,
+    apply_ai_briefing_to_decision,
+    error_ai_payload,
+    generate_ai_briefing,
+    unavailable_ai_payload,
+)
 from tempest.airport import get_airport
 from tempest.cache import JsonFileCache
 from tempest.evaluation import evaluate_conditions
@@ -523,17 +530,69 @@ def _recommendations_summary_decision(
 
 
 def _ai_unavailable_payload() -> dict[str, Any]:
+    return unavailable_ai_payload("AI briefing was not requested or is not configured.")
+
+
+def _compact_decision(decision_payload: dict[str, Any]) -> dict[str, Any]:
+    decision = decision_payload.get("decision") or {}
     return {
-        "status": "unavailable",
-        "summary": None,
-        "recommended_action": None,
-        "downgrade_decision": None,
-        "top_risks": [],
-        "best_options": [],
-        "watch_items": [],
-        "pilot_questions": [],
-        "limitations": ["AI briefing was not requested or is not configured."],
+        "icao_id": decision_payload.get("icao_id") or decision.get("airport_id"),
+        "role": decision_payload.get("role"),
+        "decision": decision.get("decision"),
+        "fail_reasons": (decision.get("fail_reasons") or [])[:5],
+        "caution_reasons": (decision.get("caution_reasons") or [])[:5],
+        "unknowns": (decision.get("unknowns") or [])[:5],
+        "pass_reasons": (decision.get("pass_reasons") or [])[:5],
+        "metar_summary": decision.get("metar_summary") or {},
+        "taf_summary": {
+            "evaluated_periods": (decision.get("taf_summary") or {}).get("evaluated_periods") or []
+        },
+        "best_runway": decision.get("best_runway"),
+        "sources": decision_payload.get("sources") or {},
+        "errors": decision_payload.get("errors") or {},
     }
+
+
+def _ai_context_for_recommendations(response: dict[str, Any], profile: MinimumsProfile) -> dict[str, Any]:
+    return {
+        "kind": "destination_recommendations",
+        "profile": {
+            "profile_id": profile.profile_id,
+            "home_airport": profile.home_airport,
+            "min_ceiling_ft_agl": profile.min_ceiling_ft_agl,
+            "min_visibility_sm": profile.min_visibility_sm,
+            "max_surface_wind_kt": profile.max_surface_wind_kt,
+            "max_crosswind_kt": profile.max_crosswind_kt,
+            "max_gust_kt": profile.max_gust_kt,
+            "max_tailwind_kt": profile.max_tailwind_kt,
+            "min_runway_length_ft": profile.min_runway_length_ft,
+            "min_runway_width_ft": profile.min_runway_width_ft,
+            "allowed_runway_surfaces": profile.allowed_runway_surfaces,
+            "max_density_altitude_ft": profile.max_density_altitude_ft,
+        },
+        "summary_decision": response.get("summary_decision"),
+        "parameters": response.get("parameters") or {},
+        "home": _compact_decision(response.get("home") or {}),
+        "recommendations": [
+            {
+                **_compact_decision(item),
+                "name": item.get("name"),
+                "distance_from_home_nm": item.get("distance_from_home_nm"),
+                "estimated_arrival": item.get("estimated_arrival"),
+                "score": item.get("score"),
+            }
+            for item in (response.get("recommendations") or [])[:10]
+        ],
+        "notes": (response.get("notes") or [])[:10],
+        "index_notes": (response.get("index_notes") or [])[:5],
+    }
+
+
+def _generate_ai_payload(context: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return generate_ai_briefing(context)
+    except AIBriefingError as exc:
+        return error_ai_payload(str(exc))
 
 
 @app.get("/health")
@@ -870,10 +929,7 @@ def recommendations(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
     evaluated.sort(key=lambda item: item["score"]["sort_key"])
     ranked = evaluated[:max_results]
-    ai_payload = _ai_unavailable_payload()
-    ai_payload["status"] = "not_requested" if not include_ai else "unavailable"
-
-    return {
+    response_payload = {
         "home_airport": home_point.icao_id,
         "summary_decision": _recommendations_summary_decision(
             home=home_payload,
@@ -890,7 +946,34 @@ def recommendations(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         "recommendations": ranked,
         "notes": notes,
         "index_notes": index_notes,
+        "ai": _ai_unavailable_payload(),
+    }
+    if include_ai:
+        ai_context = _ai_context_for_recommendations(response_payload, profile)
+        ai_payload = _generate_ai_payload(ai_context)
+        response_payload["ai"] = ai_payload
+        response_payload["summary_decision"] = apply_ai_briefing_to_decision(
+            base_decision=str(response_payload["summary_decision"]),
+            briefing=ai_payload,
+        )
+    else:
+        response_payload["ai"]["status"] = "not_requested"
+    return response_payload
+
+
+@app.post("/ai/briefing")
+def ai_briefing(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    context = payload.get("context")
+    if not isinstance(context, dict):
+        context = dict(payload)
+    ai_payload = _generate_ai_payload(context)
+    base_decision = str(payload.get("base_decision") or context.get("summary_decision") or "caution")
+    return {
         "ai": ai_payload,
+        "decision": apply_ai_briefing_to_decision(
+            base_decision=base_decision,
+            briefing=ai_payload,
+        ),
     }
 
 

@@ -395,6 +395,70 @@ def test_recommendations_keeps_results_when_candidate_fetch_fails(client, monkey
     assert any("KBBB weather fetch failed" in note for note in body["notes"])
 
 
+def test_recommendations_include_ai_applies_conservative_downgrade(client, monkeypatch, tmp_path):
+    api_app = importlib.import_module("tempest_api.app")
+    index_path = tmp_path / "station_index.csv"
+    _write_recommendation_index(index_path)
+    monkeypatch.setenv("TEMPEST_STATION_INDEX_PATH", str(index_path))
+    monkeypatch.setattr(api_app, "get_airport", lambda icao, *args, **kwargs: (_recommendation_airport(icao.strip().upper()), "api"))
+    monkeypatch.setattr(api_app, "get_latest_metar", lambda icao, *args, **kwargs: (_metar(icao_id=icao.strip().upper(), latitude=0.0, longitude=0.0), "api"))
+    monkeypatch.setattr(api_app, "get_latest_taf", lambda icao, *args, **kwargs: (_taf(), "api"))
+
+    def ai_briefing(context):
+        assert context["kind"] == "destination_recommendations"
+        return {
+            "status": "completed",
+            "summary": "Usable options exist, but convective risk needs review.",
+            "recommended_action": "Treat this as caution and review radar before departure.",
+            "downgrade_decision": "caution",
+            "top_risks": ["Storms nearby."],
+            "best_options": ["KBBB"],
+            "watch_items": ["Radar trend"],
+            "pilot_questions": ["Are storms moving toward the route?"],
+            "limitations": ["AI is advisory."],
+        }
+
+    monkeypatch.setattr(api_app, "generate_ai_briefing", ai_briefing)
+    client.post(
+        "/minimums/primary",
+        json={
+            "display_name": "Primary",
+            "home_airport": "KAAA",
+            "recommendation_radius_nm": 100,
+            "recommendation_count": 1,
+        },
+    )
+
+    response = client.post(
+        "/recommendations",
+        json={
+            "profile_id": "primary",
+            "planned_departure": "2026-04-04T18:00:00Z",
+            "include_ai": True,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary_decision"] == "caution"
+    assert body["ai"]["status"] == "completed"
+    assert body["ai"]["top_risks"] == ["Storms nearby."]
+
+
+def test_ai_briefing_endpoint_returns_unavailable_without_key(client, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    response = client.post(
+        "/ai/briefing",
+        json={"base_decision": "go", "context": {"summary_decision": "go"}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] == "go"
+    assert body["ai"]["status"] == "unavailable"
+
+
 def test_evaluate_route_endpoint_returns_route_stations(client, monkeypatch, tmp_path):
     api_app = importlib.import_module("tempest_api.app")
     index_path = tmp_path / "airport_index.csv"
