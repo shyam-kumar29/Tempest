@@ -36,7 +36,10 @@
               <p class="eyebrow">Primary workflow</p>
               <h2>Flight Check</h2>
             </div>
-            <button id="evaluateButton" class="compact-button" type="button">Evaluate Flight</button>
+            <div class="button-row">
+              <button id="recommendButton" class="compact-button" type="button">Where Should I Fly?</button>
+              <button id="evaluateButton" class="compact-button secondary-button" type="button">Evaluate Route</button>
+            </div>
           </div>
 
           <div class="flight-fields">
@@ -63,6 +66,10 @@
             <label>
               Groundspeed (kt)
               <input id="groundSpeed" type="number" min="1" step="1" value="100" />
+            </label>
+            <label class="inline include-taf">
+              <input id="includeAi" type="checkbox" checked />
+              AI review
             </label>
           </div>
         </section>
@@ -101,6 +108,18 @@
             <label>
               Display Name
               <input id="displayName" name="display_name" required placeholder="Primary Profile" />
+            </label>
+            <label>
+              Home Airport
+              <input id="homeAirport" name="home_airport" placeholder="KLAF" maxlength="4" />
+            </label>
+            <label>
+              Recommendation Radius (NM)
+              <input name="recommendation_radius_nm" type="number" min="1" step="1" value="150" />
+            </label>
+            <label>
+              Recommendation Count
+              <input name="recommendation_count" type="number" min="1" step="1" value="10" />
             </label>
           </div>
 

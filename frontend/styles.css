@@ -125,6 +125,13 @@ h3 {
   margin-bottom: 16px;
 }
 
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .flight-fields,
 .field-grid {
   display: grid;
@@ -222,6 +229,10 @@ button:hover {
   align-self: flex-start;
   background: var(--blue);
   white-space: nowrap;
+}
+
+.secondary-button {
+  background: var(--ink);
 }
 
 .status {
@@ -556,6 +567,35 @@ button:hover {
   font-weight: 800;
 }
 
+.ai-briefing {
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-top: 5px solid var(--blue);
+  border-radius: 9px;
+  background: #fff;
+  padding: 14px;
+}
+
+.briefing-summary {
+  margin: 12px 0 8px;
+  color: var(--ink);
+  font-weight: 780;
+}
+
+.briefing-action {
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-weight: 720;
+}
+
+.ai-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.recommendation-card {
+  border-left: 5px solid var(--blue);
+}
+
 .route-leg-list {
   display: grid;
   gap: 8px;
@@ -633,12 +673,14 @@ pre {
 
   .topbar,
   .panel-head,
+  .button-row,
   .station-head,
   .decision {
     flex-direction: column;
   }
 
   .panel-head,
+  .button-row,
   .station-head,
   .decision {
     align-items: flex-start;

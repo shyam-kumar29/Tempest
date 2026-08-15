@@ -15,6 +15,8 @@ const fields = [
   "min_fuel_reserve_day_min",
   "min_fuel_reserve_night_min",
   "max_density_altitude_ft",
+  "recommendation_radius_nm",
+  "recommendation_count",
 ];
 
 function $(id) {
@@ -71,6 +73,7 @@ function profilePayload() {
   const form = $("minimumsForm");
   const payload = {
     display_name: $("displayName").value.trim(),
+    home_airport: $("homeAirport").value.trim().toUpperCase() || null,
     allow_ifr: checkedOrNull(form, "allow_ifr"),
     allow_night: checkedOrNull(form, "allow_night"),
     require_dry_runway: checkedOrNull(form, "require_dry_runway"),
@@ -92,6 +95,7 @@ function fillProfile(profile) {
   state.selectedProfile = profile;
   $("profileId").value = profile.profile_id || "";
   $("displayName").value = profile.display_name || "";
+  $("homeAirport").value = profile.home_airport || "";
 
   const form = $("minimumsForm");
   for (const field of fields) {
@@ -135,6 +139,8 @@ function renderProfileSummary(profile) {
       <div><dt>Wind / Gust</dt><dd>${escapeHtml(profileLimit(profile, "max_surface_wind_kt", " kt"))} / ${escapeHtml(profileLimit(profile, "max_gust_kt", " kt"))}</dd></div>
       <div><dt>Runway</dt><dd>${escapeHtml(profileLimit(profile, "min_runway_length_ft", " ft"))} x ${escapeHtml(profileLimit(profile, "min_runway_width_ft", " ft"))}</dd></div>
       <div><dt>Surfaces</dt><dd>${escapeHtml(surfaces)}</dd></div>
+      <div><dt>Home</dt><dd>${escapeHtml(profile.home_airport || "not set")}</dd></div>
+      <div><dt>Recommendations</dt><dd>${escapeHtml(profileLimit(profile, "recommendation_radius_nm", " NM"))} / ${escapeHtml(profileLimit(profile, "recommendation_count", ""))}</dd></div>
     </dl>
   `;
 }
@@ -463,6 +469,112 @@ function renderRouteResult(data) {
   result.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+function renderAiBriefing(ai) {
+  if (!ai) return "";
+  const status = ai.status || "unavailable";
+  return `
+    <section class="ai-briefing">
+      <div class="station-head">
+        <div>
+          <p class="eyebrow">AI Review</p>
+          <h3>${escapeHtml(status === "completed" ? "Advisory Briefing" : "Unavailable")}</h3>
+        </div>
+        <span class="decision-pill caution">${escapeHtml(status.toUpperCase())}</span>
+      </div>
+      ${ai.summary ? `<p class="briefing-summary">${escapeHtml(ai.summary)}</p>` : ""}
+      ${ai.recommended_action ? `<p class="briefing-action">${escapeHtml(ai.recommended_action)}</p>` : ""}
+      <div class="details-grid ai-grid">
+        <section><h3>Top Risks</h3>${listItems(ai.top_risks)}</section>
+        <section><h3>Best Options</h3>${listItems(ai.best_options)}</section>
+        <section><h3>Watch Items</h3>${listItems(ai.watch_items)}</section>
+        <section><h3>Questions</h3>${listItems(ai.pilot_questions)}</section>
+      </div>
+      <div class="station-error">${listItems(ai.limitations)}</div>
+    </section>
+  `;
+}
+
+function renderRecommendationStation(station) {
+  const decision = station.decision || {};
+  const decisionClass = decisionClassFor(decision.decision || "caution");
+  const errors = station.errors || {};
+  const name = station.name ? ` · ${station.name}` : "";
+
+  return `
+    <section class="station-card recommendation-card">
+      <div class="station-head">
+        <div>
+          <p class="eyebrow">Destination</p>
+          <h3>${escapeHtml(station.icao_id)}${escapeHtml(name)}</h3>
+        </div>
+        <span class="decision-pill ${escapeHtml(decisionClass)}">${escapeHtml((decision.decision || "unknown").toUpperCase())}</span>
+      </div>
+      <div class="station-meta">
+        <span>${escapeHtml(formatValue(station.distance_from_home_nm, " NM"))}</span>
+        <span>${escapeHtml(localDisplayTime(station.estimated_arrival || station.planned_time))}</span>
+        <span>${escapeHtml(station.airport_type || "weather station")}</span>
+      </div>
+      <div class="result-body station-result-body">
+        <div class="reason-grid station-reason-grid">
+          <div class="reason-box failure"><h3>Failures</h3>${listItems(decision.fail_reasons)}</div>
+          <div class="reason-box caution-box"><h3>Cautions</h3>${listItems(decision.caution_reasons)}</div>
+          <div class="reason-box unknown"><h3>Unknowns</h3>${listItems(decision.unknowns)}</div>
+          <div class="reason-box pass"><h3>Passes</h3>${listItems(decision.pass_reasons)}</div>
+        </div>
+        ${renderDecodedWeather(decision)}
+      </div>
+      ${errors.weather ? `<div class="station-error">${escapeHtml(errors.weather)}</div>` : ""}
+    </section>
+  `;
+}
+
+function renderHomeSummary(station) {
+  const decision = station?.decision || {};
+  return decodedRows([
+    ["Station", station?.icao_id || "Unavailable"],
+    ["Decision", String(decision.decision || "unknown").toUpperCase()],
+    ["Planned", localDisplayTime(station?.planned_time)],
+    ["Failures", String((decision.fail_reasons || []).length)],
+    ["Cautions", String((decision.caution_reasons || []).length)],
+    ["Unknowns", String((decision.unknowns || []).length)],
+  ]);
+}
+
+function renderRecommendationsResult(data) {
+  const result = $("result");
+  const decisionClass = decisionClassFor(data.summary_decision);
+  const notes = [...(data.notes || []), ...(data.index_notes || [])];
+  result.innerHTML = `
+    <div class="decision ${escapeHtml(decisionClass)}">
+      <div>
+        <p class="eyebrow">Today</p>
+        <h2>${escapeHtml(String(data.summary_decision || "unknown").toUpperCase())}</h2>
+      </div>
+      <div class="source-row">
+        Home ${escapeHtml(data.home_airport || "unknown")}
+        <span>${escapeHtml(data.parameters?.radius_nm ?? 150)} NM</span>
+        <span>${escapeHtml((data.recommendations || []).length)} options</span>
+      </div>
+    </div>
+    ${renderAiBriefing(data.ai)}
+    <div class="details-grid route-summary-grid">
+      <section>
+        <h3>Home Airport</h3>
+        ${renderHomeSummary(data.home)}
+      </section>
+      <section>
+        <h3>Notes</h3>
+        ${listItems(notes)}
+      </section>
+    </div>
+    <div class="station-list">
+      ${(data.recommendations || []).map(renderRecommendationStation).join("")}
+    </div>
+  `;
+  result.classList.remove("hidden");
+  result.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function plannedDepartureIso() {
   const planned = $("plannedDeparture").value;
   if (!planned) return null;
@@ -473,11 +585,15 @@ function plannedDepartureIso() {
   return date.toISOString();
 }
 
+function selectedProfileId() {
+  return $("profileSelect").value || $("profileId").value.trim();
+}
+
 async function evaluateFlight() {
-  const selectedProfileId = $("profileSelect").value || $("profileId").value.trim();
+  const profileId = selectedProfileId();
   const route = $("route").value.trim().toUpperCase();
 
-  if (!selectedProfileId) {
+  if (!profileId) {
     openSettings();
     setStatus("Create minimums first");
     $("result").innerHTML = `<div class="decision caution"><h2>Create a minimums profile before evaluating.</h2></div>`;
@@ -491,7 +607,7 @@ async function evaluateFlight() {
   }
 
   localStorage.setItem("tempest:lastRoute", route);
-  localStorage.setItem("tempest:lastProfile", selectedProfileId);
+  localStorage.setItem("tempest:lastProfile", profileId);
   setStatus("Evaluating");
 
   try {
@@ -501,7 +617,7 @@ async function evaluateFlight() {
         method: "POST",
         body: JSON.stringify({
           icao: tokens[0],
-          profile_id: selectedProfileId,
+          profile_id: profileId,
           planned_departure: plannedDepartureIso(),
           include_taf: true,
         }),
@@ -512,7 +628,7 @@ async function evaluateFlight() {
         method: "POST",
         body: JSON.stringify({
           route,
-          profile_id: selectedProfileId,
+          profile_id: profileId,
           planned_departure: plannedDepartureIso(),
           include_taf: true,
           corridor_radius_nm: numberOrDefault("corridorRadius", 10),
@@ -522,6 +638,46 @@ async function evaluateFlight() {
       });
       renderRouteResult(data);
     }
+    setStatus("Ready");
+  } catch (error) {
+    $("result").innerHTML = `<div class="decision no-go"><h2>${escapeHtml(error.message)}</h2></div>`;
+    $("result").classList.remove("hidden");
+    setStatus("Error");
+  }
+}
+
+async function recommendDestinations() {
+  const profileId = selectedProfileId();
+  if (!profileId) {
+    openSettings();
+    setStatus("Create minimums first");
+    $("result").innerHTML = `<div class="decision caution"><h2>Create a minimums profile before requesting recommendations.</h2></div>`;
+    $("result").classList.remove("hidden");
+    return;
+  }
+
+  const profile = state.profiles.find((item) => item.profile_id === profileId) || state.selectedProfile;
+  if (!profile?.home_airport) {
+    openSettings();
+    setStatus("Home airport required");
+    $("result").innerHTML = `<div class="decision caution"><h2>Save a home airport before requesting recommendations.</h2></div>`;
+    $("result").classList.remove("hidden");
+    return;
+  }
+
+  localStorage.setItem("tempest:lastProfile", profileId);
+  setStatus("Finding destinations");
+  try {
+    const data = await api("/recommendations", {
+      method: "POST",
+      body: JSON.stringify({
+        profile_id: profileId,
+        planned_departure: plannedDepartureIso(),
+        include_ai: $("includeAi").checked,
+        groundspeed_kt: numberOrDefault("groundSpeed", 100),
+      }),
+    });
+    renderRecommendationsResult(data);
     setStatus("Ready");
   } catch (error) {
     $("result").innerHTML = `<div class="decision no-go"><h2>${escapeHtml(error.message)}</h2></div>`;
@@ -547,6 +703,7 @@ async function init() {
     if (event.target === $("settingsOverlay")) closeSettings();
   });
   $("evaluateButton").addEventListener("click", evaluateFlight);
+  $("recommendButton").addEventListener("click", recommendDestinations);
 
   try {
     await api("/health");
