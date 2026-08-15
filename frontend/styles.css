@@ -218,6 +218,12 @@ button:hover {
   filter: brightness(1.08);
 }
 
+button:disabled {
+  cursor: wait;
+  filter: grayscale(0.35);
+  opacity: 0.58;
+}
+
 .compact-button {
   display: inline-flex;
   align-items: center;
@@ -270,6 +276,18 @@ button:hover {
 .profile-summary {
   color: var(--muted);
   font-weight: 650;
+}
+
+.ai-status {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--blue);
+  border-radius: 8px;
+  background: var(--field);
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 750;
 }
 
 .summary-title {

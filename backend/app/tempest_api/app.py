@@ -890,7 +890,7 @@ def recommendations(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     if home_note:
         notes.append(home_note)
 
-    candidate_limit = max(max_results * 4, 30)
+    candidate_limit = max_results
     candidates = destination_candidates(
         home=home_point,
         airport_index=airport_index,
@@ -899,11 +899,6 @@ def recommendations(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         planned_departure=planned_at,
         max_candidates=candidate_limit,
     )
-    if len(candidates) >= candidate_limit:
-        notes.append(
-            f"Recommendation candidate search was capped at {candidate_limit} nearest weather-reporting stations."
-        )
-
     evaluated: list[dict[str, Any]] = []
     for candidate in candidates:
         station_payload, station_note = _evaluate_station_for_route(
@@ -974,6 +969,14 @@ def ai_briefing(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             base_decision=base_decision,
             briefing=ai_payload,
         ),
+    }
+
+
+@app.get("/ai/status")
+def ai_status() -> dict[str, Any]:
+    return {
+        "configured": bool(os.environ.get("OPENAI_API_KEY")),
+        "model": os.environ.get("TEMPEST_AI_MODEL", "gpt-5-mini"),
     }
 
 

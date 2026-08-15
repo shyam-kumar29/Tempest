@@ -1,6 +1,8 @@
 const state = {
   profiles: [],
   selectedProfile: null,
+  busy: false,
+  aiStatus: null,
 };
 
 const fields = [
@@ -43,16 +45,39 @@ function checkedOrNull(form, name) {
   return field.checked ? true : null;
 }
 
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.detail || `Request failed: ${response.status}`);
+function setBusy(isBusy) {
+  state.busy = isBusy;
+  for (const id of ["evaluateButton", "recommendButton", "settingsButton", "closeSettingsButton"]) {
+    const element = $(id);
+    if (element) element.disabled = isBusy;
   }
-  return data;
+  const saveButton = document.querySelector("#minimumsForm button[type='submit']");
+  if (saveButton) saveButton.disabled = isBusy;
+}
+
+async function api(path, options = {}) {
+  const timeoutMs = options.timeoutMs || 60000;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(path, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+      signal: controller.signal,
+    }).catch((error) => {
+      if (error.name === "AbortError") {
+        throw new Error("Request timed out. Try a smaller recommendation count or radius.");
+      }
+      throw error;
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || `Request failed: ${response.status}`);
+    }
+    return data;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 function setStatus(text) {
@@ -145,7 +170,22 @@ function renderProfileSummary(profile) {
   `;
 }
 
-function renderProfiles() {
+function renderAiStatus() {
+  const target = $("aiStatus");
+  if (!target) return;
+  const status = state.aiStatus;
+  if (!status) {
+    target.textContent = "Checking AI configuration.";
+    return;
+  }
+  if (status.configured) {
+    target.textContent = `AI review is enabled on the server (${status.model}).`;
+    return;
+  }
+  target.textContent = "AI review needs OPENAI_API_KEY set in the server environment. Recommendations still work without AI.";
+}
+
+function renderProfiles(selectedProfileId = null) {
   const select = $("profileSelect");
   select.innerHTML = "";
 
@@ -167,7 +207,7 @@ function renderProfiles() {
     select.appendChild(option);
   }
 
-  const lastProfile = localStorage.getItem("tempest:lastProfile");
+  const lastProfile = selectedProfileId || localStorage.getItem("tempest:lastProfile");
   const selected = state.profiles.find((item) => item.profile_id === lastProfile) || state.profiles[0];
   if (selected) {
     select.value = selected.profile_id;
@@ -176,33 +216,58 @@ function renderProfiles() {
   }
 }
 
+function upsertProfileInState(profile) {
+  const index = state.profiles.findIndex((item) => item.profile_id === profile.profile_id);
+  if (index >= 0) {
+    state.profiles[index] = profile;
+  } else {
+    state.profiles.push(profile);
+    state.profiles.sort((a, b) => a.profile_id.localeCompare(b.profile_id));
+  }
+  state.selectedProfile = profile;
+  localStorage.setItem("tempest:lastProfile", profile.profile_id);
+  renderProfiles(profile.profile_id);
+  fillProfile(profile);
+  $("profileSelect").value = profile.profile_id;
+}
+
 async function loadProfiles() {
   const data = await api("/minimums");
   state.profiles = data.profiles || [];
   renderProfiles();
 }
 
+async function loadAiStatus() {
+  try {
+    state.aiStatus = await api("/ai/status");
+  } catch (error) {
+    state.aiStatus = { configured: false, model: null };
+  }
+  renderAiStatus();
+}
+
 async function saveProfile(event) {
   event.preventDefault();
+  if (state.busy) return;
   const profileId = $("profileId").value.trim();
   if (!profileId) return;
 
   setStatus("Saving minimums");
+  setBusy(true);
   try {
     const data = await api(`/minimums/${encodeURIComponent(profileId)}`, {
       method: "POST",
       body: JSON.stringify(profilePayload()),
     });
-    localStorage.setItem("tempest:lastProfile", profileId);
-    await loadProfiles();
-    fillProfile(data.profile);
-    $("profileSelect").value = profileId;
+    upsertProfileInState(data.profile);
     closeSettings();
     setStatus("Ready");
   } catch (error) {
     setStatus("Minimums save failed");
     $("result").innerHTML = `<div class="decision no-go"><h2>${escapeHtml(error.message)}</h2></div>`;
     $("result").classList.remove("hidden");
+  } finally {
+    setBusy(false);
   }
 }
 
@@ -590,6 +655,7 @@ function selectedProfileId() {
 }
 
 async function evaluateFlight() {
+  if (state.busy) return;
   const profileId = selectedProfileId();
   const route = $("route").value.trim().toUpperCase();
 
@@ -609,6 +675,7 @@ async function evaluateFlight() {
   localStorage.setItem("tempest:lastRoute", route);
   localStorage.setItem("tempest:lastProfile", profileId);
   setStatus("Evaluating");
+  setBusy(true);
 
   try {
     const tokens = routeTokens(route);
@@ -643,10 +710,13 @@ async function evaluateFlight() {
     $("result").innerHTML = `<div class="decision no-go"><h2>${escapeHtml(error.message)}</h2></div>`;
     $("result").classList.remove("hidden");
     setStatus("Error");
+  } finally {
+    setBusy(false);
   }
 }
 
 async function recommendDestinations() {
+  if (state.busy) return;
   const profileId = selectedProfileId();
   if (!profileId) {
     openSettings();
@@ -667,6 +737,7 @@ async function recommendDestinations() {
 
   localStorage.setItem("tempest:lastProfile", profileId);
   setStatus("Finding destinations");
+  setBusy(true);
   try {
     const data = await api("/recommendations", {
       method: "POST",
@@ -676,6 +747,7 @@ async function recommendDestinations() {
         include_ai: $("includeAi").checked,
         groundspeed_kt: numberOrDefault("groundSpeed", 100),
       }),
+      timeoutMs: 90000,
     });
     renderRecommendationsResult(data);
     setStatus("Ready");
@@ -683,6 +755,8 @@ async function recommendDestinations() {
     $("result").innerHTML = `<div class="decision no-go"><h2>${escapeHtml(error.message)}</h2></div>`;
     $("result").classList.remove("hidden");
     setStatus("Error");
+  } finally {
+    setBusy(false);
   }
 }
 
@@ -708,6 +782,7 @@ async function init() {
   try {
     await api("/health");
     setStatus("Ready");
+    await loadAiStatus();
     await loadProfiles();
     if (!state.profiles.length) {
       $("profileId").value = "primary";

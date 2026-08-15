@@ -377,7 +377,7 @@ def test_recommendations_keeps_results_when_candidate_fetch_fails(client, monkey
             "display_name": "Primary",
             "home_airport": "KAAA",
             "recommendation_radius_nm": 100,
-            "recommendation_count": 2,
+            "recommendation_count": 3,
         },
     )
 
@@ -457,6 +457,19 @@ def test_ai_briefing_endpoint_returns_unavailable_without_key(client, monkeypatc
     body = response.json()
     assert body["decision"] == "go"
     assert body["ai"]["status"] == "unavailable"
+
+
+def test_ai_status_reports_configuration(client, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    response = client.get("/ai/status")
+    assert response.status_code == 200
+    assert response.json()["configured"] is False
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("TEMPEST_AI_MODEL", "gpt-test")
+    response = client.get("/ai/status")
+    assert response.status_code == 200
+    assert response.json() == {"configured": True, "model": "gpt-test"}
 
 
 def test_evaluate_route_endpoint_returns_route_stations(client, monkeypatch, tmp_path):

@@ -45,6 +45,20 @@ Open:
 http://127.0.0.1:8000
 ```
 
+AI review is optional. For local AI briefings, set an OpenAI API key in the server
+environment before starting the app:
+
+```bash
+export OPENAI_API_KEY=...
+export TEMPEST_AI_MODEL=gpt-5-mini
+PYTHONPATH=backend/app uvicorn tempest_api.app:app --reload
+```
+
+Without `OPENAI_API_KEY`, deterministic route checks and destination recommendations
+still work; the AI panel is shown as unavailable. To let pilots use AI without
+entering their own key, host the backend yourself with `OPENAI_API_KEY` configured
+server-side and do not expose the key to the browser.
+
 ## Run METAR fetch
 
 ```bash
