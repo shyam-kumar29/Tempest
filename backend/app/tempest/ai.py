@@ -42,6 +42,45 @@ class AIBriefingError(RuntimeError):
     """Raised when AI briefing generation fails."""
 
 
+def _openai_http_error_message(exc: HTTPError) -> str:
+    try:
+        raw_body = exc.read().decode("utf-8")
+    except Exception:
+        raw_body = ""
+
+    error_payload: dict[str, Any] = {}
+    if raw_body:
+        try:
+            decoded = json.loads(raw_body)
+        except json.JSONDecodeError:
+            decoded = {}
+        if isinstance(decoded, dict) and isinstance(decoded.get("error"), dict):
+            error_payload = decoded["error"]
+
+    api_message = str(error_payload.get("message") or "").strip()
+    api_code = str(error_payload.get("code") or error_payload.get("type") or "").strip()
+
+    if exc.code == 401:
+        return (
+            "OpenAI API authentication failed. Check that OPENAI_API_KEY in .env.local "
+            "is correct and belongs to the project you intend to use."
+        )
+    if exc.code == 429 and ("quota" in api_code.lower() or "quota" in api_message.lower()):
+        return (
+            "OpenAI API quota or billing limit reached. Check the OpenAI project billing, "
+            "usage limits, and model access. Deterministic Tempest recommendations still work."
+        )
+    if exc.code == 429:
+        return (
+            "OpenAI API rate limit reached. Wait a minute and retry, or reduce the "
+            "recommendation count/range. Deterministic Tempest recommendations still work."
+        )
+
+    if api_message:
+        return f"OpenAI briefing request failed ({exc.code}): {api_message}"
+    return f"OpenAI briefing request failed: HTTP {exc.code}"
+
+
 def unavailable_ai_payload(message: str = "AI briefing is not configured.") -> dict[str, Any]:
     return {
         "status": "unavailable",
@@ -146,6 +185,7 @@ def generate_ai_briefing(
                 "schema": AI_BRIEFING_SCHEMA,
             }
         },
+        "max_output_tokens": 900,
     }
     request = Request(
         "https://api.openai.com/v1/responses",
@@ -160,7 +200,9 @@ def generate_ai_briefing(
     try:
         with urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
             response_payload = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+    except HTTPError as exc:
+        raise AIBriefingError(_openai_http_error_message(exc)) from exc
+    except (URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         raise AIBriefingError(f"OpenAI briefing request failed: {exc}") from exc
 
     output_text = _extract_output_text(response_payload)

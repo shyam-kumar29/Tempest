@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from io import BytesIO
+from urllib.error import HTTPError
+
 import pytest
 
 from tempest.ai import (
@@ -32,6 +35,42 @@ def test_generate_ai_briefing_returns_unavailable_without_key(monkeypatch) -> No
 
     assert payload["status"] == "unavailable"
     assert "OPENAI_API_KEY" in payload["limitations"][0]
+
+
+def test_generate_ai_briefing_reports_quota_429(monkeypatch) -> None:
+    body = b'{"error":{"message":"You exceeded your current quota.","code":"insufficient_quota"}}'
+
+    def raise_quota(*args, **kwargs):
+        raise HTTPError(
+            url="https://api.openai.com/v1/responses",
+            code=429,
+            msg="Too Many Requests",
+            hdrs={},
+            fp=BytesIO(body),
+        )
+
+    monkeypatch.setattr("tempest.ai.urlopen", raise_quota)
+
+    with pytest.raises(AIBriefingError, match="quota or billing limit"):
+        generate_ai_briefing({"summary_decision": "go"}, api_key="test-key")
+
+
+def test_generate_ai_briefing_reports_rate_limit_429(monkeypatch) -> None:
+    body = b'{"error":{"message":"Rate limit reached.","code":"rate_limit_exceeded"}}'
+
+    def raise_rate_limit(*args, **kwargs):
+        raise HTTPError(
+            url="https://api.openai.com/v1/responses",
+            code=429,
+            msg="Too Many Requests",
+            hdrs={},
+            fp=BytesIO(body),
+        )
+
+    monkeypatch.setattr("tempest.ai.urlopen", raise_rate_limit)
+
+    with pytest.raises(AIBriefingError, match="rate limit reached"):
+        generate_ai_briefing({"summary_decision": "go"}, api_key="test-key")
 
 
 def test_validate_ai_briefing_requires_schema_fields() -> None:
