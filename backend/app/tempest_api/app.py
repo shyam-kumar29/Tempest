@@ -23,6 +23,7 @@ from tempest.airport import get_airport
 from tempest.cache import JsonFileCache
 from tempest.evaluation import evaluate_conditions
 from tempest.metar import get_latest_metar
+from tempest.env import load_env_file
 from tempest.minimums import MinimumsProfile
 from tempest.minimums_store import JsonMinimumsStore, MinimumsStoreError
 from tempest.recommendations import (
@@ -50,6 +51,7 @@ from tempest.wind import compute_runway_wind_components
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FRONTEND_DIR = REPO_ROOT / "frontend"
+load_env_file(REPO_ROOT / ".env.local")
 
 app = FastAPI(title="Tempest API", version="0.1.0")
 app.add_middleware(

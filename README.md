@@ -45,8 +45,16 @@ Open:
 http://127.0.0.1:8000
 ```
 
-AI review is optional. For local AI briefings, set an OpenAI API key in the server
-environment before starting the app:
+AI review is optional. For local AI briefings, create a `.env.local` file in the
+repo root:
+
+```bash
+OPENAI_API_KEY=sk-...
+TEMPEST_AI_MODEL=gpt-5-mini
+```
+
+The backend loads `.env.local` on startup, and the file is ignored by Git. You
+can also set the same values in the server environment before starting the app:
 
 ```bash
 export OPENAI_API_KEY=...
