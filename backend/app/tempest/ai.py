@@ -8,7 +8,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .config import DEFAULT_API_TIMEOUT_SECONDS
+from .config import DEFAULT_AI_TIMEOUT_SECONDS
 from .recommendations import apply_ai_downgrade
 
 
@@ -40,6 +40,17 @@ AI_BRIEFING_SCHEMA: dict[str, Any] = {
 
 class AIBriefingError(RuntimeError):
     """Raised when AI briefing generation fails."""
+
+
+def _ai_timeout_seconds(default: int = DEFAULT_AI_TIMEOUT_SECONDS) -> int:
+    raw_value = os.environ.get("TEMPEST_AI_TIMEOUT_SECONDS")
+    if not raw_value:
+        return default
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+    return max(5, parsed)
 
 
 def _openai_http_error_message(exc: HTTPError) -> str:
@@ -153,13 +164,14 @@ def generate_ai_briefing(
     *,
     api_key: str | None = None,
     model: str | None = None,
-    timeout_seconds: int = DEFAULT_API_TIMEOUT_SECONDS,
+    timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
     api_key = api_key or os.environ.get("OPENAI_API_KEY")
     if not api_key:
         return unavailable_ai_payload("OPENAI_API_KEY is not configured.")
 
     model = model or os.environ.get("TEMPEST_AI_MODEL", "gpt-5-mini")
+    timeout_seconds = timeout_seconds or _ai_timeout_seconds()
     request_payload = {
         "model": model,
         "input": [
@@ -185,7 +197,7 @@ def generate_ai_briefing(
                 "schema": AI_BRIEFING_SCHEMA,
             }
         },
-        "max_output_tokens": 900,
+        "max_output_tokens": 700,
     }
     request = Request(
         "https://api.openai.com/v1/responses",
@@ -202,7 +214,17 @@ def generate_ai_briefing(
             response_payload = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         raise AIBriefingError(_openai_http_error_message(exc)) from exc
-    except (URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+    except TimeoutError as exc:
+        raise AIBriefingError(
+            "OpenAI briefing request timed out. Deterministic Tempest recommendations still work. "
+            "Retry with fewer destinations, a smaller range, or increase TEMPEST_AI_TIMEOUT_SECONDS."
+        ) from exc
+    except (URLError, OSError, json.JSONDecodeError) as exc:
+        if "timed out" in str(exc).lower():
+            raise AIBriefingError(
+                "OpenAI briefing request timed out. Deterministic Tempest recommendations still work. "
+                "Retry with fewer destinations, a smaller range, or increase TEMPEST_AI_TIMEOUT_SECONDS."
+            ) from exc
         raise AIBriefingError(f"OpenAI briefing request failed: {exc}") from exc
 
     output_text = _extract_output_text(response_payload)

@@ -7,6 +7,7 @@ import pytest
 
 from tempest.ai import (
     AIBriefingError,
+    _ai_timeout_seconds,
     apply_ai_briefing_to_decision,
     generate_ai_briefing,
     validate_ai_briefing,
@@ -35,6 +36,20 @@ def test_generate_ai_briefing_returns_unavailable_without_key(monkeypatch) -> No
 
     assert payload["status"] == "unavailable"
     assert "OPENAI_API_KEY" in payload["limitations"][0]
+
+
+def test_ai_timeout_seconds_uses_env_with_floor(monkeypatch) -> None:
+    monkeypatch.delenv("TEMPEST_AI_TIMEOUT_SECONDS", raising=False)
+    assert _ai_timeout_seconds(default=45) == 45
+
+    monkeypatch.setenv("TEMPEST_AI_TIMEOUT_SECONDS", "60")
+    assert _ai_timeout_seconds(default=45) == 60
+
+    monkeypatch.setenv("TEMPEST_AI_TIMEOUT_SECONDS", "2")
+    assert _ai_timeout_seconds(default=45) == 5
+
+    monkeypatch.setenv("TEMPEST_AI_TIMEOUT_SECONDS", "invalid")
+    assert _ai_timeout_seconds(default=45) == 45
 
 
 def test_generate_ai_briefing_reports_quota_429(monkeypatch) -> None:
@@ -70,6 +85,16 @@ def test_generate_ai_briefing_reports_rate_limit_429(monkeypatch) -> None:
     monkeypatch.setattr("tempest.ai.urlopen", raise_rate_limit)
 
     with pytest.raises(AIBriefingError, match="rate limit reached"):
+        generate_ai_briefing({"summary_decision": "go"}, api_key="test-key")
+
+
+def test_generate_ai_briefing_reports_timeout(monkeypatch) -> None:
+    def raise_timeout(*args, **kwargs):
+        raise TimeoutError("The read operation timed out")
+
+    monkeypatch.setattr("tempest.ai.urlopen", raise_timeout)
+
+    with pytest.raises(AIBriefingError, match="request timed out"):
         generate_ai_briefing({"summary_decision": "go"}, api_key="test-key")
 
 
