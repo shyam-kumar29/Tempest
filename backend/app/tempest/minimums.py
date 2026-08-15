@@ -44,6 +44,9 @@ class MinimumsProfile:
     min_fuel_reserve_night_min: int | None = None
     max_density_altitude_ft: int | None = None
     require_alternate_for_ifr: bool | None = None
+    home_airport: str | None = None
+    recommendation_radius_nm: float = 150.0
+    recommendation_count: int = 10
     notes: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -80,6 +83,15 @@ class MinimumsProfile:
             raise MinimumsValidationError("min_fuel_reserve_night_min must be >= 0")
         if self.max_density_altitude_ft is not None and self.max_density_altitude_ft < 0:
             raise MinimumsValidationError("max_density_altitude_ft must be >= 0")
+        if self.home_airport is not None:
+            home_airport = self.home_airport.strip().upper()
+            if len(home_airport) != 4 or not home_airport.isalpha():
+                raise MinimumsValidationError("home_airport must be a 4-letter ICAO id")
+            self.home_airport = home_airport
+        if self.recommendation_radius_nm <= 0:
+            raise MinimumsValidationError("recommendation_radius_nm must be > 0")
+        if self.recommendation_count <= 0:
+            raise MinimumsValidationError("recommendation_count must be > 0")
 
         surfaces = self.allowed_runway_surfaces
         if surfaces is None:
@@ -118,6 +130,9 @@ class MinimumsProfile:
             "min_fuel_reserve_night_min": self.min_fuel_reserve_night_min,
             "max_density_altitude_ft": self.max_density_altitude_ft,
             "require_alternate_for_ifr": self.require_alternate_for_ifr,
+            "home_airport": self.home_airport,
+            "recommendation_radius_nm": self.recommendation_radius_nm,
+            "recommendation_count": self.recommendation_count,
             "notes": self.notes,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -204,6 +219,21 @@ class MinimumsProfile:
                 bool(data["require_alternate_for_ifr"])
                 if data.get("require_alternate_for_ifr") is not None
                 else None
+            ),
+            home_airport=(
+                str(data["home_airport"]).strip().upper()
+                if data.get("home_airport") is not None
+                else None
+            ),
+            recommendation_radius_nm=(
+                float(data["recommendation_radius_nm"])
+                if data.get("recommendation_radius_nm") is not None
+                else 150.0
+            ),
+            recommendation_count=(
+                int(data["recommendation_count"])
+                if data.get("recommendation_count") is not None
+                else 10
             ),
             notes=str(data["notes"]) if data.get("notes") is not None else None,
             created_at=(str(data["created_at"]) if data.get("created_at") else None),
