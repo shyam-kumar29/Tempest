@@ -17,6 +17,7 @@ const fields = [
   "min_fuel_reserve_day_min",
   "min_fuel_reserve_night_min",
   "max_density_altitude_ft",
+  "recommendation_min_distance_nm",
   "recommendation_radius_nm",
   "recommendation_count",
 ];
@@ -43,6 +44,32 @@ function numberOrNull(value) {
 function checkedOrNull(form, name) {
   const field = form.elements[name];
   return field.checked ? true : null;
+}
+
+function parseFavoriteAirports(value) {
+  return value
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      const separator = item.indexOf(":");
+      const icaoPart = separator >= 0 ? item.slice(0, separator) : item;
+      const notePart = separator >= 0 ? item.slice(separator + 1) : "";
+      return {
+        icao_id: icaoPart.trim().toUpperCase(),
+        weight: 1,
+        note: notePart.trim(),
+      };
+    });
+}
+
+function formatFavoriteAirports(favorites) {
+  return (favorites || [])
+    .map((item) => {
+      const icao = item.icao_id || "";
+      return item.note ? `${icao}: ${item.note}` : icao;
+    })
+    .join(", ");
 }
 
 function setBusy(isBusy) {
@@ -113,6 +140,7 @@ function profilePayload() {
     .map((item) => item.trim())
     .filter(Boolean);
   payload.allowed_runway_surfaces = surfaces.length ? surfaces : null;
+  payload.favorite_airports = parseFavoriteAirports(form.elements.favorite_airports.value);
   return payload;
 }
 
@@ -126,11 +154,13 @@ function fillProfile(profile) {
   for (const field of fields) {
     form.elements[field].value = profile[field] ?? "";
   }
+  form.elements.favorite_airports.value = formatFavoriteAirports(profile.favorite_airports);
   form.elements.allowed_runway_surfaces.value = (profile.allowed_runway_surfaces || []).join(", ");
   form.elements.allow_ifr.checked = profile.allow_ifr === true;
   form.elements.allow_night.checked = profile.allow_night === true;
   form.elements.require_dry_runway.checked = profile.require_dry_runway === true;
   renderProfileSummary(profile);
+  syncRecommendationControls(profile);
 }
 
 function profileLimit(profile, field, suffix) {
@@ -165,9 +195,37 @@ function renderProfileSummary(profile) {
       <div><dt>Runway</dt><dd>${escapeHtml(profileLimit(profile, "min_runway_length_ft", " ft"))} x ${escapeHtml(profileLimit(profile, "min_runway_width_ft", " ft"))}</dd></div>
       <div><dt>Surfaces</dt><dd>${escapeHtml(surfaces)}</dd></div>
       <div><dt>Home</dt><dd>${escapeHtml(profile.home_airport || "not set")}</dd></div>
-      <div><dt>Recommendations</dt><dd>${escapeHtml(profileLimit(profile, "recommendation_radius_nm", " NM"))} / ${escapeHtml(profileLimit(profile, "recommendation_count", ""))}</dd></div>
+      <div><dt>Range</dt><dd>${escapeHtml(profileLimit(profile, "recommendation_min_distance_nm", " NM"))} to ${escapeHtml(profileLimit(profile, "recommendation_radius_nm", " NM"))}</dd></div>
+      <div><dt>Recommendations</dt><dd>${escapeHtml(profileLimit(profile, "recommendation_count", ""))}</dd></div>
+      <div><dt>Favorites</dt><dd>${escapeHtml((profile.favorite_airports || []).map((item) => item.icao_id).join(", ") || "none")}</dd></div>
     </dl>
   `;
+}
+
+function syncRecommendationControls(profile) {
+  if (!profile) return;
+  $("recMinDistance").value = Math.round(profile.recommendation_min_distance_nm ?? 15);
+  $("recMaxDistance").value = Math.round(profile.recommendation_radius_nm ?? 150);
+  $("recCount").value = profile.recommendation_count ?? 10;
+  updateDistanceLabels();
+}
+
+function updateDistanceLabels(changedId = null) {
+  const minControl = $("recMinDistance");
+  const maxControl = $("recMaxDistance");
+  let minDistance = Number(minControl.value);
+  let maxDistance = Number(maxControl.value);
+  if (minDistance > maxDistance) {
+    if (changedId === "recMinDistance") {
+      maxDistance = minDistance;
+      maxControl.value = String(maxDistance);
+    } else {
+      minDistance = maxDistance;
+      minControl.value = String(minDistance);
+    }
+  }
+  $("recMinDistanceLabel").textContent = `${minDistance} NM`;
+  $("recMaxDistanceLabel").textContent = `${maxDistance} NM`;
 }
 
 function renderAiStatus() {
@@ -403,6 +461,7 @@ function numberOrDefault(id, fallback) {
 
 function renderResult(data) {
   const result = $("result");
+  $("aiDecision").classList.add("hidden");
   const decision = data.decision;
   const weather = data.weather || {};
   const sources = data.sources || {};
@@ -502,6 +561,7 @@ function renderRouteStation(station) {
 
 function renderRouteResult(data) {
   const result = $("result");
+  $("aiDecision").classList.add("hidden");
   const decisionClass = decisionClassFor(data.summary_decision);
   const routeNotes = [...(data.coverage_notes || []), ...(data.index_notes || [])];
   result.innerHTML = `
@@ -564,6 +624,7 @@ function renderRecommendationStation(station) {
   const decisionClass = decisionClassFor(decision.decision || "caution");
   const errors = station.errors || {};
   const name = station.name ? ` · ${station.name}` : "";
+  const favoriteLabel = station.favorite ? "Saved Favorite" : "Save Favorite";
 
   return `
     <section class="station-card recommendation-card">
@@ -572,13 +633,23 @@ function renderRecommendationStation(station) {
           <p class="eyebrow">Destination</p>
           <h3>${escapeHtml(station.icao_id)}${escapeHtml(name)}</h3>
         </div>
-        <span class="decision-pill ${escapeHtml(decisionClass)}">${escapeHtml((decision.decision || "unknown").toUpperCase())}</span>
+        <div class="station-actions">
+          <button
+            class="favorite-button"
+            type="button"
+            data-favorite-icao="${escapeHtml(station.icao_id)}"
+            data-favorite-name="${escapeHtml(station.name || "")}"
+            data-favorite-active="${escapeHtml(String(Boolean(station.favorite)))}"
+          >${escapeHtml(favoriteLabel)}</button>
+          <span class="decision-pill ${escapeHtml(decisionClass)}">${escapeHtml((decision.decision || "unknown").toUpperCase())}</span>
+        </div>
       </div>
       <div class="station-meta">
         <span>${escapeHtml(formatValue(station.distance_from_home_nm, " NM"))}</span>
         <span>${escapeHtml(localDisplayTime(station.estimated_arrival || station.planned_time))}</span>
         <span>${escapeHtml(station.airport_type || "weather station")}</span>
       </div>
+      ${station.favorite_note ? `<div class="favorite-note">${escapeHtml(station.favorite_note)}</div>` : ""}
       <div class="result-body station-result-body">
         <div class="reason-grid station-reason-grid">
           <div class="reason-box failure"><h3>Failures</h3>${listItems(decision.fail_reasons)}</div>
@@ -607,8 +678,11 @@ function renderHomeSummary(station) {
 
 function renderRecommendationsResult(data) {
   const result = $("result");
+  const aiDecision = $("aiDecision");
   const decisionClass = decisionClassFor(data.summary_decision);
   const notes = [...(data.notes || []), ...(data.index_notes || [])];
+  aiDecision.innerHTML = renderAiBriefing(data.ai);
+  aiDecision.classList.toggle("hidden", !aiDecision.innerHTML.trim());
   result.innerHTML = `
     <div class="decision ${escapeHtml(decisionClass)}">
       <div>
@@ -617,11 +691,10 @@ function renderRecommendationsResult(data) {
       </div>
       <div class="source-row">
         Home ${escapeHtml(data.home_airport || "unknown")}
-        <span>${escapeHtml(data.parameters?.radius_nm ?? 150)} NM</span>
+        <span>${escapeHtml(data.parameters?.min_distance_nm ?? 0)}-${escapeHtml(data.parameters?.max_distance_nm ?? data.parameters?.radius_nm ?? 150)} NM</span>
         <span>${escapeHtml((data.recommendations || []).length)} options</span>
       </div>
     </div>
-    ${renderAiBriefing(data.ai)}
     <div class="details-grid route-summary-grid">
       <section>
         <h3>Home Airport</h3>
@@ -637,7 +710,7 @@ function renderRecommendationsResult(data) {
     </div>
   `;
   result.classList.remove("hidden");
-  result.scrollIntoView({ behavior: "smooth", block: "start" });
+  aiDecision.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function plannedDepartureIso() {
@@ -654,6 +727,36 @@ function selectedProfileId() {
   return $("profileSelect").value || $("profileId").value.trim();
 }
 
+function activeProfile() {
+  const profileId = selectedProfileId();
+  return state.profiles.find((item) => item.profile_id === profileId) || state.selectedProfile;
+}
+
+async function toggleFavoriteAirport(icaoId, name = "") {
+  const profile = activeProfile();
+  if (!profile?.profile_id) return;
+
+  const favorites = [...(profile.favorite_airports || [])];
+  const index = favorites.findIndex((item) => item.icao_id === icaoId);
+  if (index >= 0) {
+    favorites.splice(index, 1);
+  } else {
+    favorites.push({
+      icao_id: icaoId,
+      weight: 1,
+      note: name ? `Saved from recommendations: ${name}` : "Saved from recommendations",
+    });
+  }
+
+  setStatus("Saving favorite");
+  const data = await api(`/minimums/${encodeURIComponent(profile.profile_id)}`, {
+    method: "POST",
+    body: JSON.stringify({ ...profile, favorite_airports: favorites }),
+  });
+  upsertProfileInState(data.profile);
+  setStatus("Ready");
+}
+
 async function evaluateFlight() {
   if (state.busy) return;
   const profileId = selectedProfileId();
@@ -662,6 +765,7 @@ async function evaluateFlight() {
   if (!profileId) {
     openSettings();
     setStatus("Create minimums first");
+    $("aiDecision").classList.add("hidden");
     $("result").innerHTML = `<div class="decision caution"><h2>Create a minimums profile before evaluating.</h2></div>`;
     $("result").classList.remove("hidden");
     return;
@@ -700,13 +804,14 @@ async function evaluateFlight() {
           include_taf: true,
           corridor_radius_nm: numberOrDefault("corridorRadius", 10),
           sample_spacing_nm: numberOrDefault("sampleSpacing", 25),
-          groundspeed_kt: numberOrDefault("groundSpeed", 100),
+          groundspeed_kt: numberOrDefault("routeGroundSpeed", 100),
         }),
       });
       renderRouteResult(data);
     }
     setStatus("Ready");
   } catch (error) {
+    $("aiDecision").classList.add("hidden");
     $("result").innerHTML = `<div class="decision no-go"><h2>${escapeHtml(error.message)}</h2></div>`;
     $("result").classList.remove("hidden");
     setStatus("Error");
@@ -721,15 +826,17 @@ async function recommendDestinations() {
   if (!profileId) {
     openSettings();
     setStatus("Create minimums first");
+    $("aiDecision").classList.add("hidden");
     $("result").innerHTML = `<div class="decision caution"><h2>Create a minimums profile before requesting recommendations.</h2></div>`;
     $("result").classList.remove("hidden");
     return;
   }
 
-  const profile = state.profiles.find((item) => item.profile_id === profileId) || state.selectedProfile;
+  const profile = activeProfile();
   if (!profile?.home_airport) {
     openSettings();
     setStatus("Home airport required");
+    $("aiDecision").classList.add("hidden");
     $("result").innerHTML = `<div class="decision caution"><h2>Save a home airport before requesting recommendations.</h2></div>`;
     $("result").classList.remove("hidden");
     return;
@@ -745,6 +852,9 @@ async function recommendDestinations() {
         profile_id: profileId,
         planned_departure: plannedDepartureIso(),
         include_ai: $("includeAi").checked,
+        min_distance_nm: numberOrDefault("recMinDistance", 15),
+        max_distance_nm: numberOrDefault("recMaxDistance", 150),
+        max_results: numberOrDefault("recCount", 10),
         groundspeed_kt: numberOrDefault("groundSpeed", 100),
       }),
       timeoutMs: 90000,
@@ -752,6 +862,7 @@ async function recommendDestinations() {
     renderRecommendationsResult(data);
     setStatus("Ready");
   } catch (error) {
+    $("aiDecision").classList.add("hidden");
     $("result").innerHTML = `<div class="decision no-go"><h2>${escapeHtml(error.message)}</h2></div>`;
     $("result").classList.remove("hidden");
     setStatus("Error");
@@ -778,6 +889,24 @@ async function init() {
   });
   $("evaluateButton").addEventListener("click", evaluateFlight);
   $("recommendButton").addEventListener("click", recommendDestinations);
+  $("result").addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-favorite-icao]");
+    if (!button || state.busy) return;
+    try {
+      await toggleFavoriteAirport(button.dataset.favoriteIcao, button.dataset.favoriteName || "");
+      button.textContent = button.dataset.favoriteActive === "true" ? "Save Favorite" : "Saved Favorite";
+      button.dataset.favoriteActive = button.dataset.favoriteActive === "true" ? "false" : "true";
+    } catch (error) {
+      setStatus("Favorite save failed");
+      $("aiDecision").classList.add("hidden");
+      $("result").insertAdjacentHTML(
+        "afterbegin",
+        `<div class="station-error">${escapeHtml(error.message)}</div>`
+      );
+    }
+  });
+  $("recMinDistance").addEventListener("input", () => updateDistanceLabels("recMinDistance"));
+  $("recMaxDistance").addEventListener("input", () => updateDistanceLabels("recMaxDistance"));
 
   try {
     await api("/health");

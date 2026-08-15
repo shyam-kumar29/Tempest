@@ -12,7 +12,7 @@
         <div>
           <p class="eyebrow">Tempest</p>
           <h1>Flight planning assistant</h1>
-          <p class="lede">Check a planned flight against saved personal minimums, live METAR/TAF, and runway winds.</p>
+          <p class="lede">Get personalized destination ideas or check a specific route against saved minimums, live METAR/TAF, and runway winds.</p>
         </div>
         <div class="top-actions">
           <div id="apiStatus" class="status">Checking API</div>
@@ -29,24 +29,17 @@
         </div>
       </section>
 
-      <section class="planner-grid">
-        <section class="panel flight-panel">
+      <section class="workflow-grid">
+        <section class="panel flight-panel today-panel">
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Primary workflow</p>
-              <h2>Flight Check</h2>
+              <p class="eyebrow">Today</p>
+              <h2>Where Should I Fly?</h2>
             </div>
-            <div class="button-row">
-              <button id="recommendButton" class="compact-button" type="button">Where Should I Fly?</button>
-              <button id="evaluateButton" class="compact-button secondary-button" type="button">Evaluate Route</button>
-            </div>
+            <button id="recommendButton" class="compact-button" type="button">Find Destinations</button>
           </div>
 
           <div class="flight-fields">
-            <label class="route-field">
-              Route
-              <input id="route" placeholder="KLAF - KIND" autocomplete="off" />
-            </label>
             <label>
               Minimums Profile
               <select id="profileSelect" aria-label="Profile"></select>
@@ -56,7 +49,46 @@
               <input id="plannedDeparture" type="datetime-local" />
             </label>
             <label>
-              Radius (NM)
+              Groundspeed (kt)
+              <input id="groundSpeed" type="number" min="1" step="1" value="100" />
+            </label>
+            <label class="range-field">
+              Minimum Distance
+              <span id="recMinDistanceLabel">15 NM</span>
+              <input id="recMinDistance" type="range" min="0" max="500" step="5" value="15" />
+            </label>
+            <label class="range-field">
+              Maximum Distance
+              <span id="recMaxDistanceLabel">150 NM</span>
+              <input id="recMaxDistance" type="range" min="5" max="500" step="5" value="150" />
+            </label>
+            <label>
+              Destination Count
+              <input id="recCount" type="number" min="1" max="25" step="1" value="10" />
+            </label>
+            <label class="inline include-taf">
+              <input id="includeAi" type="checkbox" checked />
+              AI advisory review
+            </label>
+          </div>
+        </section>
+
+        <section class="panel route-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Route Check</p>
+              <h2>Check a Specific Flight</h2>
+            </div>
+            <button id="evaluateButton" class="compact-button secondary-button" type="button">Evaluate Route</button>
+          </div>
+
+          <div class="flight-fields route-check-fields">
+            <label class="route-field">
+              Route
+              <input id="route" placeholder="KLAF - KIND" autocomplete="off" />
+            </label>
+            <label>
+              Corridor Radius (NM)
               <input id="corridorRadius" type="number" min="1" step="1" value="10" />
             </label>
             <label>
@@ -65,16 +97,13 @@
             </label>
             <label>
               Groundspeed (kt)
-              <input id="groundSpeed" type="number" min="1" step="1" value="100" />
-            </label>
-            <label class="inline include-taf">
-              <input id="includeAi" type="checkbox" checked />
-              AI review
+              <input id="routeGroundSpeed" type="number" min="1" step="1" value="100" />
             </label>
           </div>
         </section>
       </section>
 
+      <section id="aiDecision" class="result panel hidden"></section>
       <section id="result" class="result panel hidden"></section>
     </main>
 
@@ -115,7 +144,11 @@
               <input id="homeAirport" name="home_airport" placeholder="KLAF" maxlength="4" />
             </label>
             <label>
-              Recommendation Radius (NM)
+              Recommendation Min Distance (NM)
+              <input name="recommendation_min_distance_nm" type="number" min="0" step="1" value="15" />
+            </label>
+            <label>
+              Recommendation Max Distance (NM)
               <input name="recommendation_radius_nm" type="number" min="1" step="1" value="150" />
             </label>
             <label>
@@ -123,6 +156,11 @@
               <input name="recommendation_count" type="number" min="1" step="1" value="10" />
             </label>
           </div>
+
+          <label>
+            Favorite Airports
+            <textarea id="favoriteAirports" name="favorite_airports" placeholder="KIND: lunch stop, KLAF: local practice"></textarea>
+          </label>
 
           <div class="field-grid">
             <label>Min Ceiling (ft)<input name="min_ceiling_ft_agl" type="number" min="0" /></label>
