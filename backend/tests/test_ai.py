@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from io import BytesIO
 from urllib.error import HTTPError
 
@@ -8,6 +9,7 @@ import pytest
 from tempest.ai import (
     AIBriefingError,
     _ai_timeout_seconds,
+    _ai_reasoning_effort,
     apply_ai_briefing_to_decision,
     generate_ai_briefing,
     validate_ai_briefing,
@@ -50,6 +52,73 @@ def test_ai_timeout_seconds_uses_env_with_floor(monkeypatch) -> None:
 
     monkeypatch.setenv("TEMPEST_AI_TIMEOUT_SECONDS", "invalid")
     assert _ai_timeout_seconds(default=45) == 45
+
+
+def test_ai_reasoning_effort_uses_safe_default(monkeypatch) -> None:
+    monkeypatch.delenv("TEMPEST_AI_REASONING_EFFORT", raising=False)
+    assert _ai_reasoning_effort() == "minimal"
+
+    monkeypatch.setenv("TEMPEST_AI_REASONING_EFFORT", "none")
+    assert _ai_reasoning_effort() == "none"
+
+    monkeypatch.setenv("TEMPEST_AI_REASONING_EFFORT", "extreme")
+    assert _ai_reasoning_effort() == "minimal"
+
+
+class _FakeResponse:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
+
+
+def test_generate_ai_briefing_retries_incomplete_token_response(monkeypatch) -> None:
+    responses = [
+        {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [{"type": "reasoning", "summary": []}],
+        },
+        {"output_text": json.dumps(_briefing(best_options=["KCCC"]))},
+    ]
+    requests = []
+
+    def fake_urlopen(request, *args, **kwargs):
+        requests.append(json.loads(request.data.decode("utf-8")))
+        return _FakeResponse(responses.pop(0))
+
+    monkeypatch.setattr("tempest.ai.urlopen", fake_urlopen)
+
+    payload = generate_ai_briefing({"summary_decision": "go"}, api_key="test-key")
+
+    assert payload["status"] == "completed"
+    assert payload["best_options"] == ["KCCC"]
+    assert len(requests) == 2
+    assert requests[0]["max_output_tokens"] < requests[1]["max_output_tokens"]
+    assert requests[0]["reasoning"]["effort"] == "minimal"
+
+
+def test_generate_ai_briefing_reports_incomplete_without_text(monkeypatch) -> None:
+    def fake_urlopen(*args, **kwargs):
+        return _FakeResponse(
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+                "output": [],
+            }
+        )
+
+    monkeypatch.setattr("tempest.ai.urlopen", fake_urlopen)
+
+    with pytest.raises(AIBriefingError, match="incomplete"):
+        generate_ai_briefing({"summary_decision": "go"}, api_key="test-key")
 
 
 def test_generate_ai_briefing_reports_quota_429(monkeypatch) -> None:

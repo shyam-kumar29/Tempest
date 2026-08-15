@@ -52,6 +52,7 @@ repo root:
 OPENAI_API_KEY=sk-...
 TEMPEST_AI_MODEL=gpt-5-mini
 TEMPEST_AI_TIMEOUT_SECONDS=45
+TEMPEST_AI_REASONING_EFFORT=minimal
 ```
 
 The backend loads `.env.local` on startup, and the file is ignored by Git. You
@@ -61,6 +62,7 @@ can also set the same values in the server environment before starting the app:
 export OPENAI_API_KEY=...
 export TEMPEST_AI_MODEL=gpt-5-mini
 export TEMPEST_AI_TIMEOUT_SECONDS=45
+export TEMPEST_AI_REASONING_EFFORT=minimal
 PYTHONPATH=backend/app uvicorn tempest_api.app:app --reload
 ```
 

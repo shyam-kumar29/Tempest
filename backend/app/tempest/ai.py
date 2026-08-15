@@ -37,6 +37,9 @@ AI_BRIEFING_SCHEMA: dict[str, Any] = {
     ],
 }
 
+AI_MAX_OUTPUT_TOKENS = 1400
+AI_RETRY_MAX_OUTPUT_TOKENS = 2600
+
 
 class AIBriefingError(RuntimeError):
     """Raised when AI briefing generation fails."""
@@ -51,6 +54,13 @@ def _ai_timeout_seconds(default: int = DEFAULT_AI_TIMEOUT_SECONDS) -> int:
     except ValueError:
         return default
     return max(5, parsed)
+
+
+def _ai_reasoning_effort() -> str:
+    effort = os.environ.get("TEMPEST_AI_REASONING_EFFORT", "minimal").strip().lower()
+    if effort not in {"none", "minimal", "low", "medium", "high"}:
+        return "minimal"
+    return effort
 
 
 def _openai_http_error_message(exc: HTTPError) -> str:
@@ -127,6 +137,99 @@ def _extract_output_text(response: dict[str, Any]) -> str:
     return "".join(chunks)
 
 
+def _response_incomplete_reason(response: dict[str, Any]) -> str | None:
+    details = response.get("incomplete_details")
+    if isinstance(details, dict) and details.get("reason"):
+        return str(details["reason"])
+    return None
+
+
+def _response_error_message(response: dict[str, Any]) -> str | None:
+    error = response.get("error")
+    if not isinstance(error, dict):
+        return None
+    message = error.get("message")
+    code = error.get("code")
+    if message and code:
+        return f"OpenAI briefing response failed ({code}): {message}"
+    if message:
+        return f"OpenAI briefing response failed: {message}"
+    return "OpenAI briefing response failed."
+
+
+def _briefing_request_payload(
+    *,
+    model: str,
+    context: dict[str, Any],
+    max_output_tokens: int,
+) -> dict[str, Any]:
+    return {
+        "model": model,
+        "input": [
+            {
+                "role": "system",
+                "content": (
+                    "You are an advisory aviation weather briefing assistant for Tempest. "
+                    "Use only the provided deterministic weather/minimums results. "
+                    "Never upgrade a deterministic decision. You may recommend a conservative downgrade. "
+                    "Do not provide regulatory clearance or imply the flight is safe. "
+                    "Return concise JSON only."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(context, sort_keys=True),
+            },
+        ],
+        "reasoning": {"effort": _ai_reasoning_effort()},
+        "text": {
+            "verbosity": "low",
+            "format": {
+                "type": "json_schema",
+                "name": "tempest_ai_briefing",
+                "strict": True,
+                "schema": AI_BRIEFING_SCHEMA,
+            },
+        },
+        "max_output_tokens": max_output_tokens,
+    }
+
+
+def _post_openai_response(
+    *,
+    api_key: str,
+    request_payload: dict[str, Any],
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    request = Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(request_payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        raise AIBriefingError(_openai_http_error_message(exc)) from exc
+    except TimeoutError as exc:
+        raise AIBriefingError(
+            "OpenAI briefing request timed out. Deterministic Tempest recommendations still work. "
+            "Retry with fewer destinations, a smaller range, or increase TEMPEST_AI_TIMEOUT_SECONDS."
+        ) from exc
+    except (URLError, OSError, json.JSONDecodeError) as exc:
+        if "timed out" in str(exc).lower():
+            raise AIBriefingError(
+                "OpenAI briefing request timed out. Deterministic Tempest recommendations still work. "
+                "Retry with fewer destinations, a smaller range, or increase TEMPEST_AI_TIMEOUT_SECONDS."
+            ) from exc
+        raise AIBriefingError(f"OpenAI briefing request failed: {exc}") from exc
+
+
 def validate_ai_briefing(payload: dict[str, Any]) -> dict[str, Any]:
     for field in AI_BRIEFING_SCHEMA["required"]:
         if field not in payload:
@@ -172,63 +275,46 @@ def generate_ai_briefing(
 
     model = model or os.environ.get("TEMPEST_AI_MODEL", "gpt-5-mini")
     timeout_seconds = timeout_seconds or _ai_timeout_seconds()
-    request_payload = {
-        "model": model,
-        "input": [
-            {
-                "role": "system",
-                "content": (
-                    "You are an advisory aviation weather briefing assistant for Tempest. "
-                    "Use only the provided deterministic weather/minimums results. "
-                    "Never upgrade a deterministic decision. You may recommend a conservative downgrade. "
-                    "Do not provide regulatory clearance or imply the flight is safe."
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(context, sort_keys=True),
-            },
-        ],
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "tempest_ai_briefing",
-                "strict": True,
-                "schema": AI_BRIEFING_SCHEMA,
-            }
-        },
-        "max_output_tokens": 700,
-    }
-    request = Request(
-        "https://api.openai.com/v1/responses",
-        data=json.dumps(request_payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
 
-    try:
-        with urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
-            response_payload = json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        raise AIBriefingError(_openai_http_error_message(exc)) from exc
-    except TimeoutError as exc:
-        raise AIBriefingError(
-            "OpenAI briefing request timed out. Deterministic Tempest recommendations still work. "
-            "Retry with fewer destinations, a smaller range, or increase TEMPEST_AI_TIMEOUT_SECONDS."
-        ) from exc
-    except (URLError, OSError, json.JSONDecodeError) as exc:
-        if "timed out" in str(exc).lower():
-            raise AIBriefingError(
-                "OpenAI briefing request timed out. Deterministic Tempest recommendations still work. "
-                "Retry with fewer destinations, a smaller range, or increase TEMPEST_AI_TIMEOUT_SECONDS."
-            ) from exc
-        raise AIBriefingError(f"OpenAI briefing request failed: {exc}") from exc
+    response_payload: dict[str, Any] | None = None
+    for max_output_tokens in (AI_MAX_OUTPUT_TOKENS, AI_RETRY_MAX_OUTPUT_TOKENS):
+        response_payload = _post_openai_response(
+            api_key=api_key,
+            request_payload=_briefing_request_payload(
+                model=model,
+                context=context,
+                max_output_tokens=max_output_tokens,
+            ),
+            timeout_seconds=timeout_seconds,
+        )
+        output_text = _extract_output_text(response_payload)
+        if output_text:
+            break
+        incomplete_reason = _response_incomplete_reason(response_payload)
+        if incomplete_reason not in {"max_output_tokens", "max_tokens"}:
+            break
+    else:
+        output_text = ""
 
+    if response_payload is None:
+        raise AIBriefingError("OpenAI briefing response was unavailable")
+
+    response_error = _response_error_message(response_payload)
+    if response_error:
+        raise AIBriefingError(response_error)
+
+    incomplete_reason = _response_incomplete_reason(response_payload)
     output_text = _extract_output_text(response_payload)
     if not output_text:
+        if incomplete_reason in {"max_output_tokens", "max_tokens"}:
+            raise AIBriefingError(
+                "OpenAI briefing response ran out of output tokens before producing visible JSON. "
+                "Retry with fewer destinations or set TEMPEST_AI_REASONING_EFFORT=none if your model supports it."
+            )
+        if incomplete_reason:
+            raise AIBriefingError(
+                f"OpenAI briefing response was incomplete before producing visible JSON: {incomplete_reason}"
+            )
         raise AIBriefingError("OpenAI briefing response did not include output text")
 
     try:
