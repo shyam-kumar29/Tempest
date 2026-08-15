@@ -266,6 +266,135 @@ def _write_route_index(path, *, include_endpoints: bool = False):
     )
 
 
+def _write_recommendation_index(path):
+    path.write_text(
+        "\n".join(
+            [
+                "icao_id,name,latitude,longitude,type",
+                "KAAA,Home Airport,0.0,0.0,METAR|TAF",
+                "KBBB,Bad Weather,0.0,0.5,METAR|TAF",
+                "KCCC,Good Weather,0.0,1.0,METAR",
+                "KDDD,Far Airport,0.0,3.5,METAR|TAF",
+                "KNON,No Weather,0.0,0.25,airport",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _recommendation_airport(icao_id: str) -> AirportRecord:
+    coordinates = {
+        "KAAA": (0.0, 0.0, 100),
+        "KBBB": (0.0, 0.5, 120),
+        "KCCC": (0.0, 1.0, 130),
+        "KDDD": (0.0, 3.5, 200),
+    }
+    latitude, longitude, elevation_ft = coordinates[icao_id]
+    return AirportRecord(
+        icao_id=icao_id,
+        iata_id=None,
+        name=f"{icao_id} Airport",
+        latitude=latitude,
+        longitude=longitude,
+        elevation_ft=elevation_ft,
+        runways=[RunwayRecord("22", 220.0, 5000, 100, "asphalt")],
+        source_payload={},
+    )
+
+
+def test_recommendations_requires_home_airport(client):
+    client.post("/minimums/primary", json={"display_name": "Primary"})
+
+    response = client.post("/recommendations", json={"profile_id": "primary"})
+
+    assert response.status_code == 422
+    assert "home_airport" in response.json()["detail"]
+
+
+def test_recommendations_returns_ranked_destinations(client, monkeypatch, tmp_path):
+    api_app = importlib.import_module("tempest_api.app")
+    index_path = tmp_path / "station_index.csv"
+    _write_recommendation_index(index_path)
+    monkeypatch.setenv("TEMPEST_STATION_INDEX_PATH", str(index_path))
+    monkeypatch.setattr(api_app, "get_airport", lambda icao, *args, **kwargs: (_recommendation_airport(icao.strip().upper()), "api"))
+
+    def metar_for_recommendations(icao, *args, **kwargs):
+        station = icao.strip().upper()
+        visibility = 2.0 if station == "KBBB" else 10.0
+        return _metar(icao_id=station, visibility_sm=visibility, latitude=0.0, longitude=0.0), "api"
+
+    monkeypatch.setattr(api_app, "get_latest_metar", metar_for_recommendations)
+    monkeypatch.setattr(api_app, "get_latest_taf", lambda icao, *args, **kwargs: (_taf(), "api"))
+    client.post(
+        "/minimums/primary",
+        json={
+            "display_name": "Primary",
+            "home_airport": "kaaa",
+            "recommendation_radius_nm": 100,
+            "recommendation_count": 2,
+            "min_visibility_sm": 5,
+            "min_runway_width_ft": 75,
+        },
+    )
+
+    response = client.post(
+        "/recommendations",
+        json={
+            "profile_id": "primary",
+            "planned_departure": "2026-04-04T18:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["home_airport"] == "KAAA"
+    assert body["summary_decision"] == "go"
+    assert body["ai"]["status"] == "not_requested"
+    assert [item["icao_id"] for item in body["recommendations"]] == ["KCCC", "KBBB"]
+    assert body["recommendations"][0]["decision"]["decision"] == "go"
+    assert body["recommendations"][1]["decision"]["decision"] == "no-go"
+    assert body["recommendations"][0]["estimated_arrival"].startswith("2026-04-04T18:36")
+
+
+def test_recommendations_keeps_results_when_candidate_fetch_fails(client, monkeypatch, tmp_path):
+    api_app = importlib.import_module("tempest_api.app")
+    index_path = tmp_path / "station_index.csv"
+    _write_recommendation_index(index_path)
+    monkeypatch.setenv("TEMPEST_STATION_INDEX_PATH", str(index_path))
+    monkeypatch.setattr(api_app, "get_airport", lambda icao, *args, **kwargs: (_recommendation_airport(icao.strip().upper()), "api"))
+
+    def metar_for_recommendations(icao, *args, **kwargs):
+        station = icao.strip().upper()
+        if station == "KBBB":
+            raise RuntimeError("metar unavailable")
+        return _metar(icao_id=station, latitude=0.0, longitude=0.0), "api"
+
+    monkeypatch.setattr(api_app, "get_latest_metar", metar_for_recommendations)
+    monkeypatch.setattr(api_app, "get_latest_taf", lambda icao, *args, **kwargs: (_taf(), "api"))
+    client.post(
+        "/minimums/primary",
+        json={
+            "display_name": "Primary",
+            "home_airport": "KAAA",
+            "recommendation_radius_nm": 100,
+            "recommendation_count": 2,
+        },
+    )
+
+    response = client.post(
+        "/recommendations",
+        json={
+            "profile_id": "primary",
+            "planned_departure": "2026-04-04T18:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["icao_id"] for item in body["recommendations"]] == ["KCCC", "KBBB"]
+    assert any("KBBB weather fetch failed" in note for note in body["notes"])
+
+
 def test_evaluate_route_endpoint_returns_route_stations(client, monkeypatch, tmp_path):
     api_app = importlib.import_module("tempest_api.app")
     index_path = tmp_path / "airport_index.csv"

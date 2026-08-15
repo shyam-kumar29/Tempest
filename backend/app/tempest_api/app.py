@@ -18,6 +18,10 @@ from tempest.evaluation import evaluate_conditions
 from tempest.metar import get_latest_metar
 from tempest.minimums import MinimumsProfile
 from tempest.minimums_store import JsonMinimumsStore, MinimumsStoreError
+from tempest.recommendations import (
+    destination_candidates,
+    recommendation_score,
+)
 from tempest.route import (
     AirportIndexEntry,
     RoutePoint,
@@ -502,6 +506,36 @@ def _route_summary_decision(stations: list[dict[str, Any]], coverage_notes: list
     return "go"
 
 
+def _recommendations_summary_decision(
+    *,
+    home: dict[str, Any],
+    recommendations: list[dict[str, Any]],
+    notes: list[str],
+) -> str:
+    home_decision = home["decision"]["decision"]
+    if home_decision == "no-go":
+        return "no-go"
+    if any(item["decision"]["decision"] == "go" for item in recommendations):
+        return "caution" if home_decision == "caution" or notes else "go"
+    if any(item["decision"]["decision"] == "caution" for item in recommendations):
+        return "caution"
+    return "no-go"
+
+
+def _ai_unavailable_payload() -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "summary": None,
+        "recommended_action": None,
+        "downgrade_decision": None,
+        "top_risks": [],
+        "best_options": [],
+        "watch_items": [],
+        "pilot_questions": [],
+        "limitations": ["AI briefing was not requested or is not configured."],
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -738,6 +772,125 @@ def evaluate_route(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         "stations": stations,
         "coverage_notes": coverage_notes,
         "index_notes": index_notes,
+    }
+
+
+@app.post("/recommendations")
+def recommendations(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    profile = _load_profile(str(payload.get("profile_id", "")).strip())
+    if profile.home_airport is None:
+        raise HTTPException(
+            status_code=422,
+            detail="home_airport must be saved in the minimums profile before requesting recommendations",
+        )
+
+    planned_at = parse_aviation_time(payload.get("planned_departure"))
+    if planned_at is None:
+        planned_at = datetime.now(UTC)
+    planned_at = planned_at.astimezone(UTC)
+
+    radius_nm = _positive_float(
+        payload,
+        "radius_nm",
+        float(profile.recommendation_radius_nm or 150.0),
+    )
+    max_results = _optional_int(payload, "max_results") or int(profile.recommendation_count or 10)
+    if max_results <= 0:
+        raise HTTPException(status_code=422, detail="max_results must be greater than 0")
+    groundspeed_kt = _positive_float(payload, "groundspeed_kt", 100.0)
+    include_ai = bool(payload.get("include_ai", False))
+    prefer_cache = bool(payload.get("prefer_cache", False))
+    taf_lookahead_hours = _optional_float(payload, "taf_lookahead_hours", 0.0) or 0.0
+    fuel_reserve_min = _optional_int(payload, "fuel_reserve_min")
+
+    airport_index, index_notes = load_route_station_index(
+        cache_dir=_cache_dir(),
+        bundled_station_index_path=_station_index_path(),
+        fallback_airport_index_path=_airport_index_path(),
+        allow_refresh=_fetch_station_cache(),
+    )
+    notes: list[str] = []
+    home_point = _route_point_for_icao(
+        profile.home_airport,
+        prefer_cache=prefer_cache,
+        airport_index=airport_index,
+        coverage_notes=notes,
+    )
+
+    home_payload, home_note = _evaluate_station_for_route(
+        station=home_point.icao_id,
+        role="departure",
+        profile=profile,
+        planned_time=planned_at,
+        distance_from_departure_nm=0.0,
+        include_taf=True,
+        taf_lookahead_hours=taf_lookahead_hours,
+        fuel_reserve_min=fuel_reserve_min,
+        prefer_cache=prefer_cache,
+    )
+    if home_note:
+        notes.append(home_note)
+
+    candidate_limit = max(max_results * 4, 30)
+    candidates = destination_candidates(
+        home=home_point,
+        airport_index=airport_index,
+        radius_nm=radius_nm,
+        groundspeed_kt=groundspeed_kt,
+        planned_departure=planned_at,
+        max_candidates=candidate_limit,
+    )
+    if len(candidates) >= candidate_limit:
+        notes.append(
+            f"Recommendation candidate search was capped at {candidate_limit} nearest weather-reporting stations."
+        )
+
+    evaluated: list[dict[str, Any]] = []
+    for candidate in candidates:
+        station_payload, station_note = _evaluate_station_for_route(
+            station=candidate.airport.icao_id,
+            role="arrival",
+            profile=profile,
+            planned_time=candidate.estimated_arrival,
+            distance_from_departure_nm=candidate.distance_nm,
+            include_taf=True,
+            taf_lookahead_hours=taf_lookahead_hours,
+            fuel_reserve_min=fuel_reserve_min,
+            prefer_cache=prefer_cache,
+        )
+        station_payload["role"] = "destination"
+        station_payload["name"] = candidate.airport.name
+        station_payload["airport_type"] = candidate.airport.airport_type
+        station_payload["distance_from_home_nm"] = candidate.distance_nm
+        station_payload["estimated_arrival"] = candidate.estimated_arrival.astimezone(UTC).isoformat()
+        station_payload["score"] = recommendation_score(station_payload)
+        evaluated.append(station_payload)
+        if station_note:
+            notes.append(station_note)
+
+    evaluated.sort(key=lambda item: item["score"]["sort_key"])
+    ranked = evaluated[:max_results]
+    ai_payload = _ai_unavailable_payload()
+    ai_payload["status"] = "not_requested" if not include_ai else "unavailable"
+
+    return {
+        "home_airport": home_point.icao_id,
+        "summary_decision": _recommendations_summary_decision(
+            home=home_payload,
+            recommendations=ranked,
+            notes=notes,
+        ),
+        "parameters": {
+            "planned_departure": planned_at.isoformat(),
+            "radius_nm": radius_nm,
+            "max_results": max_results,
+            "groundspeed_kt": groundspeed_kt,
+        },
+        "home": home_payload,
+        "recommendations": ranked,
+        "notes": notes,
+        "index_notes": index_notes,
+        "ai": ai_payload,
     }
 
 
