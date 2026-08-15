@@ -34,14 +34,17 @@ def destination_candidates(
     *,
     home: RoutePoint,
     airport_index: list[AirportIndexEntry],
+    min_distance_nm: float,
     radius_nm: float,
     groundspeed_kt: float,
     planned_departure: datetime,
     max_candidates: int,
+    favorite_airports: set[str] | None = None,
 ) -> list[DestinationCandidate]:
     """Find nearby weather-reporting destination candidates from the station index."""
 
     planned_departure = planned_departure.astimezone(UTC)
+    favorite_airports = favorite_airports or set()
     candidates: list[DestinationCandidate] = []
     for airport in airport_index:
         if airport.icao_id == home.icao_id:
@@ -49,7 +52,7 @@ def destination_candidates(
         if _station_type_rank(airport.airport_type) >= 3:
             continue
         distance_nm = haversine_nm(home.latitude, home.longitude, airport.latitude, airport.longitude)
-        if distance_nm > radius_nm:
+        if distance_nm < min_distance_nm or distance_nm > radius_nm:
             continue
         candidates.append(
             DestinationCandidate(
@@ -59,8 +62,39 @@ def destination_candidates(
             )
         )
 
-    candidates.sort(key=lambda item: (_station_type_rank(item.airport.airport_type), item.distance_nm))
-    return candidates[:max_candidates]
+    candidates.sort(
+        key=lambda item: (
+            item.airport.icao_id not in favorite_airports,
+            _station_type_rank(item.airport.airport_type),
+            item.distance_nm,
+        )
+    )
+    if len(candidates) <= max_candidates:
+        return candidates
+
+    span = max(radius_nm - min_distance_nm, 0.0)
+    if span <= 0:
+        return candidates[:max_candidates]
+
+    bucket_edges = [
+        min_distance_nm + (span / 3.0),
+        min_distance_nm + (span * 2.0 / 3.0),
+    ]
+    buckets: list[list[DestinationCandidate]] = [[], [], []]
+    for candidate in candidates:
+        if candidate.distance_nm <= bucket_edges[0]:
+            buckets[0].append(candidate)
+        elif candidate.distance_nm <= bucket_edges[1]:
+            buckets[1].append(candidate)
+        else:
+            buckets[2].append(candidate)
+
+    selected: list[DestinationCandidate] = []
+    while len(selected) < max_candidates and any(buckets):
+        for bucket in buckets:
+            if bucket and len(selected) < max_candidates:
+                selected.append(bucket.pop(0))
+    return selected
 
 
 def _margin_score(decision: dict[str, Any]) -> float:
@@ -87,7 +121,11 @@ def _margin_score(decision: dict[str, Any]) -> float:
     return round(score, 2)
 
 
-def recommendation_score(station_payload: dict[str, Any]) -> dict[str, Any]:
+def recommendation_score(
+    station_payload: dict[str, Any],
+    *,
+    favorite_weight: float = 0.0,
+) -> dict[str, Any]:
     decision = station_payload.get("decision") or {}
     decision_name = str(decision.get("decision") or "caution")
     severity = DECISION_RANK.get(decision_name, 1)
@@ -106,8 +144,9 @@ def recommendation_score(station_payload: dict[str, Any]) -> dict[str, Any]:
         "severity": severity,
         "margin": margin,
         "data_quality": data_quality,
+        "favorite_weight": favorite_weight,
         "distance_nm": distance,
-        "sort_key": [severity, -margin, -data_quality, distance],
+        "sort_key": [severity, -margin, -favorite_weight, -data_quality, distance],
     }
 
 

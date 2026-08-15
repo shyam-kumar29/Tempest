@@ -45,8 +45,10 @@ class MinimumsProfile:
     max_density_altitude_ft: int | None = None
     require_alternate_for_ifr: bool | None = None
     home_airport: str | None = None
+    recommendation_min_distance_nm: float = 15.0
     recommendation_radius_nm: float = 150.0
     recommendation_count: int = 10
+    favorite_airports: list[dict[str, Any]] | None = None
     notes: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -88,10 +90,18 @@ class MinimumsProfile:
             if len(home_airport) != 4 or not home_airport.isalpha():
                 raise MinimumsValidationError("home_airport must be a 4-letter ICAO id")
             self.home_airport = home_airport
+        if self.recommendation_min_distance_nm < 0:
+            raise MinimumsValidationError("recommendation_min_distance_nm must be >= 0")
         if self.recommendation_radius_nm <= 0:
             raise MinimumsValidationError("recommendation_radius_nm must be > 0")
+        if self.recommendation_radius_nm < self.recommendation_min_distance_nm:
+            raise MinimumsValidationError(
+                "recommendation_radius_nm must be >= recommendation_min_distance_nm"
+            )
         if self.recommendation_count <= 0:
             raise MinimumsValidationError("recommendation_count must be > 0")
+        if self.favorite_airports is not None:
+            self.favorite_airports = _normalize_favorite_airports(self.favorite_airports)
 
         surfaces = self.allowed_runway_surfaces
         if surfaces is None:
@@ -131,8 +141,10 @@ class MinimumsProfile:
             "max_density_altitude_ft": self.max_density_altitude_ft,
             "require_alternate_for_ifr": self.require_alternate_for_ifr,
             "home_airport": self.home_airport,
+            "recommendation_min_distance_nm": self.recommendation_min_distance_nm,
             "recommendation_radius_nm": self.recommendation_radius_nm,
             "recommendation_count": self.recommendation_count,
+            "favorite_airports": self.favorite_airports,
             "notes": self.notes,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -225,6 +237,11 @@ class MinimumsProfile:
                 if data.get("home_airport") is not None
                 else None
             ),
+            recommendation_min_distance_nm=(
+                float(data["recommendation_min_distance_nm"])
+                if data.get("recommendation_min_distance_nm") is not None
+                else 15.0
+            ),
             recommendation_radius_nm=(
                 float(data["recommendation_radius_nm"])
                 if data.get("recommendation_radius_nm") is not None
@@ -235,12 +252,42 @@ class MinimumsProfile:
                 if data.get("recommendation_count") is not None
                 else 10
             ),
+            favorite_airports=(
+                data["favorite_airports"] if data.get("favorite_airports") is not None else None
+            ),
             notes=str(data["notes"]) if data.get("notes") is not None else None,
             created_at=(str(data["created_at"]) if data.get("created_at") else None),
             updated_at=(str(data["updated_at"]) if data.get("updated_at") else None),
         )
         profile.validate()
         return profile
+
+
+def _normalize_favorite_airports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    favorites: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if isinstance(item, str):
+            raw: dict[str, Any] = {"icao_id": item}
+        elif isinstance(item, dict):
+            raw = item
+        else:
+            raise MinimumsValidationError("favorite_airports entries must be objects")
+
+        icao_id = str(raw.get("icao_id") or raw.get("airport") or "").strip().upper()
+        if len(icao_id) != 4 or not icao_id.isalpha():
+            raise MinimumsValidationError("favorite_airports entries must include a 4-letter ICAO id")
+
+        weight = float(raw.get("weight", 1.0))
+        if weight < 0:
+            raise MinimumsValidationError("favorite_airports weight must be >= 0")
+
+        note = raw.get("note", raw.get("notes"))
+        favorites[icao_id] = {
+            "icao_id": icao_id,
+            "weight": weight,
+            "note": str(note).strip() if note is not None else "",
+        }
+    return list(favorites.values())
 
 
 def utc_now_iso() -> str:

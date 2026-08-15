@@ -531,6 +531,14 @@ def _recommendations_summary_decision(
     return "no-go"
 
 
+def _favorite_airport_map(profile: MinimumsProfile) -> dict[str, dict[str, Any]]:
+    return {
+        str(item["icao_id"]).upper(): item
+        for item in (profile.favorite_airports or [])
+        if isinstance(item, dict) and item.get("icao_id")
+    }
+
+
 def _ai_unavailable_payload() -> dict[str, Any]:
     return unavailable_ai_payload("AI briefing was not requested or is not configured.")
 
@@ -571,6 +579,7 @@ def _ai_context_for_recommendations(response: dict[str, Any], profile: MinimumsP
             "min_runway_width_ft": profile.min_runway_width_ft,
             "allowed_runway_surfaces": profile.allowed_runway_surfaces,
             "max_density_altitude_ft": profile.max_density_altitude_ft,
+            "favorite_airports": profile.favorite_airports or [],
         },
         "summary_decision": response.get("summary_decision"),
         "parameters": response.get("parameters") or {},
@@ -581,6 +590,8 @@ def _ai_context_for_recommendations(response: dict[str, Any], profile: MinimumsP
                 "name": item.get("name"),
                 "distance_from_home_nm": item.get("distance_from_home_nm"),
                 "estimated_arrival": item.get("estimated_arrival"),
+                "favorite": item.get("favorite"),
+                "favorite_note": item.get("favorite_note"),
                 "score": item.get("score"),
             }
             for item in (response.get("recommendations") or [])[:10]
@@ -850,11 +861,23 @@ def recommendations(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         planned_at = datetime.now(UTC)
     planned_at = planned_at.astimezone(UTC)
 
+    min_distance_nm = _optional_float(
+        payload,
+        "min_distance_nm",
+        float(profile.recommendation_min_distance_nm or 0.0),
+    )
+    min_distance_nm = min_distance_nm or 0.0
+    max_distance_key = "max_distance_nm" if payload.get("max_distance_nm") is not None else "radius_nm"
     radius_nm = _positive_float(
         payload,
-        "radius_nm",
+        max_distance_key,
         float(profile.recommendation_radius_nm or 150.0),
     )
+    if min_distance_nm > radius_nm:
+        raise HTTPException(
+            status_code=422,
+            detail="min_distance_nm must be less than or equal to max_distance_nm",
+        )
     max_results = _optional_int(payload, "max_results") or int(profile.recommendation_count or 10)
     if max_results <= 0:
         raise HTTPException(status_code=422, detail="max_results must be greater than 0")
@@ -892,14 +915,17 @@ def recommendations(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     if home_note:
         notes.append(home_note)
 
-    candidate_limit = max_results
+    favorite_map = _favorite_airport_map(profile)
+    candidate_limit = max(max_results * 3, 24)
     candidates = destination_candidates(
         home=home_point,
         airport_index=airport_index,
+        min_distance_nm=min_distance_nm,
         radius_nm=radius_nm,
         groundspeed_kt=groundspeed_kt,
         planned_departure=planned_at,
         max_candidates=candidate_limit,
+        favorite_airports=set(favorite_map),
     )
     evaluated: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -919,7 +945,14 @@ def recommendations(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         station_payload["airport_type"] = candidate.airport.airport_type
         station_payload["distance_from_home_nm"] = candidate.distance_nm
         station_payload["estimated_arrival"] = candidate.estimated_arrival.astimezone(UTC).isoformat()
-        station_payload["score"] = recommendation_score(station_payload)
+        favorite = favorite_map.get(candidate.airport.icao_id)
+        station_payload["favorite"] = bool(favorite)
+        station_payload["favorite_note"] = favorite.get("note", "") if favorite else ""
+        favorite_weight = float(favorite.get("weight", 0.0)) if favorite else 0.0
+        station_payload["score"] = recommendation_score(
+            station_payload,
+            favorite_weight=favorite_weight,
+        )
         evaluated.append(station_payload)
         if station_note:
             notes.append(station_note)
@@ -935,9 +968,12 @@ def recommendations(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         ),
         "parameters": {
             "planned_departure": planned_at.isoformat(),
+            "min_distance_nm": min_distance_nm,
+            "max_distance_nm": radius_nm,
             "radius_nm": radius_nm,
             "max_results": max_results,
             "groundspeed_kt": groundspeed_kt,
+            "candidate_pool_size": len(candidates),
         },
         "home": home_payload,
         "recommendations": ranked,

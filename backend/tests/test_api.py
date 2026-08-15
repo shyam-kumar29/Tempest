@@ -330,8 +330,10 @@ def test_recommendations_returns_ranked_destinations(client, monkeypatch, tmp_pa
         json={
             "display_name": "Primary",
             "home_airport": "kaaa",
+            "recommendation_min_distance_nm": 10,
             "recommendation_radius_nm": 100,
             "recommendation_count": 2,
+            "favorite_airports": [{"icao_id": "KBBB", "weight": 5, "note": "Good cafe"}],
             "min_visibility_sm": 5,
             "min_runway_width_ft": 75,
         },
@@ -353,7 +355,58 @@ def test_recommendations_returns_ranked_destinations(client, monkeypatch, tmp_pa
     assert [item["icao_id"] for item in body["recommendations"]] == ["KCCC", "KBBB"]
     assert body["recommendations"][0]["decision"]["decision"] == "go"
     assert body["recommendations"][1]["decision"]["decision"] == "no-go"
+    assert body["recommendations"][1]["favorite"] is True
+    assert body["recommendations"][1]["favorite_note"] == "Good cafe"
+    assert body["parameters"]["min_distance_nm"] == 10.0
+    assert body["parameters"]["max_distance_nm"] == 100.0
     assert body["recommendations"][0]["estimated_arrival"].startswith("2026-04-04T18:36")
+
+
+def test_recommendations_supports_distance_band_and_radius_alias(client, monkeypatch, tmp_path):
+    api_app = importlib.import_module("tempest_api.app")
+    index_path = tmp_path / "station_index.csv"
+    _write_recommendation_index(index_path)
+    monkeypatch.setenv("TEMPEST_STATION_INDEX_PATH", str(index_path))
+    monkeypatch.setattr(api_app, "get_airport", lambda icao, *args, **kwargs: (_recommendation_airport(icao.strip().upper()), "api"))
+    monkeypatch.setattr(api_app, "get_latest_metar", lambda icao, *args, **kwargs: (_metar(icao_id=icao.strip().upper(), latitude=0.0, longitude=0.0), "api"))
+    monkeypatch.setattr(api_app, "get_latest_taf", lambda icao, *args, **kwargs: (_taf(), "api"))
+    client.post(
+        "/minimums/primary",
+        json={
+            "display_name": "Primary",
+            "home_airport": "KAAA",
+            "recommendation_radius_nm": 150,
+            "recommendation_count": 5,
+        },
+    )
+
+    response = client.post(
+        "/recommendations",
+        json={
+            "profile_id": "primary",
+            "planned_departure": "2026-04-04T18:00:00Z",
+            "min_distance_nm": 40,
+            "radius_nm": 100,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["icao_id"] for item in body["recommendations"]] == ["KCCC"]
+    assert body["parameters"]["min_distance_nm"] == 40.0
+    assert body["parameters"]["max_distance_nm"] == 100.0
+
+    response = client.post(
+        "/recommendations",
+        json={
+            "profile_id": "primary",
+            "min_distance_nm": 120,
+            "max_distance_nm": 50,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "min_distance_nm" in response.json()["detail"]
 
 
 def test_recommendations_keeps_results_when_candidate_fetch_fails(client, monkeypatch, tmp_path):

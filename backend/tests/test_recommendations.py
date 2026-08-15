@@ -21,6 +21,7 @@ def test_destination_candidates_filter_and_prefer_weather_stations() -> None:
             AirportIndexEntry("KNON", "No Weather", 0.0, 0.2, "airport"),
             AirportIndexEntry("KFAR", "Far", 0.0, 4.0, "METAR|TAF"),
         ],
+        min_distance_nm=10.0,
         radius_nm=100.0,
         groundspeed_kt=100.0,
         planned_departure=datetime(2026, 4, 4, 18, tzinfo=UTC),
@@ -29,6 +30,28 @@ def test_destination_candidates_filter_and_prefer_weather_stations() -> None:
 
     assert [candidate.airport.icao_id for candidate in candidates] == ["KMTA", "KMET", "KTAF"]
     assert candidates[0].estimated_arrival > datetime(2026, 4, 4, 18, tzinfo=UTC)
+
+
+def test_destination_candidates_use_balanced_distance_buckets() -> None:
+    candidates = destination_candidates(
+        home=RoutePoint("KAAA", "Home", 0.0, 0.0),
+        airport_index=[
+            AirportIndexEntry("KAAA", "Home", 0.0, 0.0, "METAR|TAF"),
+            AirportIndexEntry("KNEA", "Near One", 0.0, 0.3, "METAR|TAF"),
+            AirportIndexEntry("KNEB", "Near Two", 0.0, 0.4, "METAR|TAF"),
+            AirportIndexEntry("KMIA", "Mid One", 0.0, 1.2, "METAR|TAF"),
+            AirportIndexEntry("KMIB", "Mid Two", 0.0, 1.4, "METAR|TAF"),
+            AirportIndexEntry("KFAA", "Far One", 0.0, 2.0, "METAR|TAF"),
+            AirportIndexEntry("KFAB", "Far Two", 0.0, 2.2, "METAR|TAF"),
+        ],
+        min_distance_nm=10.0,
+        radius_nm=150.0,
+        groundspeed_kt=100.0,
+        planned_departure=datetime(2026, 4, 4, 18, tzinfo=UTC),
+        max_candidates=3,
+    )
+
+    assert [candidate.airport.icao_id for candidate in candidates] == ["KNEA", "KMIA", "KFAA"]
 
 
 def test_recommendation_score_sorts_good_weather_ahead() -> None:
@@ -42,11 +65,13 @@ def test_recommendation_score_sorts_good_weather_ahead() -> None:
                 "taf_summary": {"evaluated_periods": []},
                 "best_runway": {"runway_id": "22"},
             },
-        }
+        },
+        favorite_weight=2.0,
     )
 
     assert score["severity"] == 0
     assert score["data_quality"] == 5
+    assert score["favorite_weight"] == 2.0
     assert score["margin"] > 0
     assert score["sort_key"][0] == 0
 
