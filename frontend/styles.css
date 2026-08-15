@@ -549,7 +549,7 @@ button:disabled {
 
 .station-list {
   display: grid;
-  gap: 14px;
+  gap: 8px;
   margin-top: 16px;
 }
 
@@ -625,6 +625,16 @@ button:disabled {
   font-weight: 800;
 }
 
+.briefing-limitations {
+  margin-top: 10px;
+  border-radius: 7px;
+  background: var(--field);
+  padding: 9px 10px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 750;
+}
+
 .ai-briefing {
   margin-top: 16px;
   border: 1px solid var(--line);
@@ -650,8 +660,75 @@ button:disabled {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.recommendation-card {
-  border-left: 5px solid var(--blue);
+.recommendation-row {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.recommendation-row summary {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.2fr) minmax(240px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.recommendation-row summary::-webkit-details-marker {
+  display: none;
+}
+
+.recommendation-row summary:hover {
+  background: var(--field);
+}
+
+.recommendation-main,
+.recommendation-facts {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.recommendation-main {
+  flex-wrap: nowrap;
+}
+
+.recommendation-facts {
+  justify-content: flex-end;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.recommendation-icao {
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 950;
+}
+
+.recommendation-name {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recommendation-detail {
+  border-top: 1px solid var(--line);
+  padding: 12px;
+}
+
+.recommendation-reason {
+  margin-bottom: 10px;
+  color: var(--ink);
+  font-weight: 760;
 }
 
 .favorite-button {
@@ -753,6 +830,9 @@ pre {
   .button-row,
   .station-head,
   .station-actions,
+  .recommendation-row summary,
+  .recommendation-main,
+  .recommendation-facts,
   .decision {
     flex-direction: column;
   }
@@ -771,6 +851,16 @@ pre {
 
   .source-row {
     justify-content: flex-start;
+  }
+
+  .recommendation-row summary {
+    grid-template-columns: 1fr;
+    align-items: flex-start;
+  }
+
+  .recommendation-facts {
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .top-actions {

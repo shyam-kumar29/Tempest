@@ -614,7 +614,7 @@ function renderAiBriefing(ai) {
         <section><h3>Watch Items</h3>${listItems(ai.watch_items)}</section>
         <section><h3>Questions</h3>${listItems(ai.pilot_questions)}</section>
       </div>
-      <div class="station-error">${listItems(ai.limitations)}</div>
+      <div class="briefing-limitations">${listItems(ai.limitations)}</div>
     </section>
   `;
 }
@@ -623,16 +623,32 @@ function renderRecommendationStation(station) {
   const decision = station.decision || {};
   const decisionClass = decisionClassFor(decision.decision || "caution");
   const errors = station.errors || {};
-  const name = station.name ? ` · ${station.name}` : "";
+  const name = station.name || "Unnamed airport";
   const favoriteLabel = station.favorite ? "Saved Favorite" : "Save Favorite";
+  const primaryReason =
+    (decision.fail_reasons || [])[0] ||
+    (decision.caution_reasons || [])[0] ||
+    (decision.unknowns || [])[0] ||
+    (decision.pass_reasons || [])[0] ||
+    "No decision details available.";
 
   return `
-    <section class="station-card recommendation-card">
-      <div class="station-head">
-        <div>
-          <p class="eyebrow">Destination</p>
-          <h3>${escapeHtml(station.icao_id)}${escapeHtml(name)}</h3>
+    <details class="recommendation-row">
+      <summary>
+        <div class="recommendation-main">
+          <span class="recommendation-icao">${escapeHtml(station.icao_id)}</span>
+          <span class="recommendation-name">${escapeHtml(name)}</span>
         </div>
+        <div class="recommendation-facts">
+          <span>${escapeHtml(formatValue(station.distance_from_home_nm, " NM"))}</span>
+          <span>${escapeHtml(localDisplayTime(station.estimated_arrival || station.planned_time))}</span>
+          <span>${escapeHtml(station.favorite ? "Favorite" : station.airport_type || "Weather")}</span>
+        </div>
+        <span class="decision-pill ${escapeHtml(decisionClass)}">${escapeHtml((decision.decision || "unknown").toUpperCase())}</span>
+      </summary>
+      <div class="recommendation-detail">
+        <p class="recommendation-reason">${escapeHtml(primaryReason)}</p>
+        ${station.favorite_note ? `<div class="favorite-note">${escapeHtml(station.favorite_note)}</div>` : ""}
         <div class="station-actions">
           <button
             class="favorite-button"
@@ -641,16 +657,8 @@ function renderRecommendationStation(station) {
             data-favorite-name="${escapeHtml(station.name || "")}"
             data-favorite-active="${escapeHtml(String(Boolean(station.favorite)))}"
           >${escapeHtml(favoriteLabel)}</button>
-          <span class="decision-pill ${escapeHtml(decisionClass)}">${escapeHtml((decision.decision || "unknown").toUpperCase())}</span>
         </div>
-      </div>
-      <div class="station-meta">
-        <span>${escapeHtml(formatValue(station.distance_from_home_nm, " NM"))}</span>
-        <span>${escapeHtml(localDisplayTime(station.estimated_arrival || station.planned_time))}</span>
-        <span>${escapeHtml(station.airport_type || "weather station")}</span>
-      </div>
-      ${station.favorite_note ? `<div class="favorite-note">${escapeHtml(station.favorite_note)}</div>` : ""}
-      <div class="result-body station-result-body">
+        <div class="result-body station-result-body">
         <div class="reason-grid station-reason-grid">
           <div class="reason-box failure"><h3>Failures</h3>${listItems(decision.fail_reasons)}</div>
           <div class="reason-box caution-box"><h3>Cautions</h3>${listItems(decision.caution_reasons)}</div>
@@ -658,9 +666,10 @@ function renderRecommendationStation(station) {
           <div class="reason-box pass"><h3>Passes</h3>${listItems(decision.pass_reasons)}</div>
         </div>
         ${renderDecodedWeather(decision)}
+        </div>
+        ${errors.weather ? `<div class="station-error">${escapeHtml(errors.weather)}</div>` : ""}
       </div>
-      ${errors.weather ? `<div class="station-error">${escapeHtml(errors.weather)}</div>` : ""}
-    </section>
+    </details>
   `;
 }
 

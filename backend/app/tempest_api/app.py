@@ -524,8 +524,10 @@ def _recommendations_summary_decision(
     home_decision = home["decision"]["decision"]
     if home_decision == "no-go":
         return "no-go"
+    if home_decision == "caution":
+        return "caution"
     if any(item["decision"]["decision"] == "go" for item in recommendations):
-        return "caution" if home_decision == "caution" or notes else "go"
+        return "go"
     if any(item["decision"]["decision"] == "caution" for item in recommendations):
         return "caution"
     return "no-go"

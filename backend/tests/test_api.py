@@ -444,6 +444,7 @@ def test_recommendations_keeps_results_when_candidate_fetch_fails(client, monkey
 
     assert response.status_code == 200
     body = response.json()
+    assert body["summary_decision"] == "go"
     assert [item["icao_id"] for item in body["recommendations"]] == ["KCCC", "KBBB"]
     assert any("KBBB weather fetch failed" in note for note in body["notes"])
 
