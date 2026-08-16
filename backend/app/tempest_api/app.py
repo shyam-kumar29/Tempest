@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -18,6 +18,15 @@ from tempest.ai import (
     error_ai_payload,
     generate_ai_briefing,
     unavailable_ai_payload,
+)
+from tempest.auth import (
+    SESSION_COOKIE_NAME,
+    AuthError,
+    AuthStoreError,
+    AuthUser,
+    JsonUserStore,
+    sign_session,
+    verify_session,
 )
 from tempest.airport import get_airport
 from tempest.cache import JsonFileCache
@@ -67,6 +76,10 @@ def _minimums_path() -> Path:
     return Path(os.environ.get("TEMPEST_MINIMUMS_PATH", "data/minimums/profiles.json"))
 
 
+def _users_path() -> Path:
+    return Path(os.environ.get("TEMPEST_USERS_PATH", "data/auth/users.json"))
+
+
 def _cache_dir() -> Path:
     return Path(os.environ.get("TEMPEST_CACHE_DIR", "data/cache"))
 
@@ -87,8 +100,48 @@ def _fetch_station_cache() -> bool:
     }
 
 
-def _store() -> JsonMinimumsStore:
-    return JsonMinimumsStore(_minimums_path())
+def _store(user: AuthUser | None = None) -> JsonMinimumsStore:
+    return JsonMinimumsStore(_minimums_path(), owner_id=None if user is None else user.user_id)
+
+
+def _user_store() -> JsonUserStore:
+    return JsonUserStore(_users_path())
+
+
+def _cookie_secure() -> bool:
+    return os.environ.get("TEMPEST_COOKIE_SECURE", "0").strip().lower() in {"1", "true", "yes"}
+
+
+def _set_session_cookie(response: Response, user: AuthUser) -> None:
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        sign_session(user.user_id),
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="lax",
+        max_age=14 * 24 * 60 * 60,
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+
+
+def _current_user(request: Request) -> AuthUser:
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    user_id = verify_session(token)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    try:
+        user = _user_store().get_user(user_id)
+    except AuthStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return user
 
 
 def _validate_icao(icao: str) -> str:
@@ -247,12 +300,12 @@ def _weather_bundle(
     }
 
 
-def _load_profile(profile_id: str) -> MinimumsProfile:
+def _load_profile(profile_id: str, user: AuthUser) -> MinimumsProfile:
     if not profile_id:
         raise HTTPException(status_code=422, detail="profile_id is required")
 
     try:
-        profile = _store().get_profile(profile_id)
+        profile = _store(user).get_profile(profile_id)
     except MinimumsStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if profile is None:
@@ -615,12 +668,56 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/auth/signup")
+def auth_signup(payload: dict[str, Any] = Body(...), response: Response = None) -> dict[str, Any]:
+    username = str(payload.get("username", ""))
+    password = str(payload.get("password", ""))
+    try:
+        user = _user_store().create_user(username, password)
+    except AuthError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except AuthStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if response is not None:
+        _set_session_cookie(response, user)
+    return {"user": user.to_public_dict()}
+
+
+@app.post("/auth/login")
+def auth_login(payload: dict[str, Any] = Body(...), response: Response = None) -> dict[str, Any]:
+    username = str(payload.get("username", ""))
+    password = str(payload.get("password", ""))
+    try:
+        user = _user_store().authenticate(username, password)
+    except AuthError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except AuthStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    if response is not None:
+        _set_session_cookie(response, user)
+    return {"user": user.to_public_dict()}
+
+
+@app.post("/auth/logout")
+def auth_logout(response: Response) -> dict[str, bool]:
+    _clear_session_cookie(response)
+    return {"ok": True}
+
+
+@app.get("/auth/me")
+def auth_me(user: AuthUser = Depends(_current_user)) -> dict[str, Any]:
+    return {"user": user.to_public_dict()}
+
+
 @app.get("/weather/{icao}")
 def weather(
     icao: str,
     include_taf: bool = True,
     include_airport: bool = True,
     prefer_cache: bool = False,
+    user: AuthUser = Depends(_current_user),
 ) -> dict[str, Any]:
     bundle = _weather_bundle(
         icao,
@@ -648,17 +745,17 @@ def weather(
 
 
 @app.get("/minimums")
-def list_minimums() -> dict[str, Any]:
+def list_minimums(user: AuthUser = Depends(_current_user)) -> dict[str, Any]:
     try:
-        return {"profiles": [profile.to_dict() for profile in _store().list_profiles()]}
+        return {"profiles": [profile.to_dict() for profile in _store(user).list_profiles()]}
     except MinimumsStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/minimums/{profile_id}")
-def get_minimums(profile_id: str) -> dict[str, Any]:
+def get_minimums(profile_id: str, user: AuthUser = Depends(_current_user)) -> dict[str, Any]:
     try:
-        profile = _store().get_profile(profile_id)
+        profile = _store(user).get_profile(profile_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except MinimumsStoreError as exc:
@@ -672,19 +769,20 @@ def get_minimums(profile_id: str) -> dict[str, Any]:
 def upsert_minimums(
     profile_id: str,
     payload: dict[str, Any] = Body(...),
+    user: AuthUser = Depends(_current_user),
 ) -> dict[str, Any]:
     profile = _profile_from_payload(profile_id, payload)
     try:
-        saved = _store().upsert_profile(profile)
+        saved = _store(user).upsert_profile(profile)
     except MinimumsStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"profile": saved.to_dict()}
 
 
 @app.delete("/minimums/{profile_id}")
-def delete_minimums(profile_id: str) -> dict[str, Any]:
+def delete_minimums(profile_id: str, user: AuthUser = Depends(_current_user)) -> dict[str, Any]:
     try:
-        deleted = _store().delete_profile(profile_id)
+        deleted = _store(user).delete_profile(profile_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except MinimumsStoreError as exc:
@@ -695,10 +793,13 @@ def delete_minimums(profile_id: str) -> dict[str, Any]:
 
 
 @app.post("/evaluate")
-def evaluate(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+def evaluate(
+    payload: dict[str, Any] = Body(...),
+    user: AuthUser = Depends(_current_user),
+) -> dict[str, Any]:
     station = _validate_icao(str(payload.get("icao", "")))
     profile_id = str(payload.get("profile_id", "")).strip()
-    profile = _load_profile(profile_id)
+    profile = _load_profile(profile_id, user)
 
     bundle = _weather_bundle(
         station,
@@ -724,8 +825,11 @@ def evaluate(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 
 @app.post("/evaluate-route")
-def evaluate_route(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    profile = _load_profile(str(payload.get("profile_id", "")).strip())
+def evaluate_route(
+    payload: dict[str, Any] = Body(...),
+    user: AuthUser = Depends(_current_user),
+) -> dict[str, Any]:
+    profile = _load_profile(str(payload.get("profile_id", "")).strip(), user)
 
     try:
         route = parse_route(str(payload.get("route", "")))
@@ -850,8 +954,11 @@ def evaluate_route(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 
 @app.post("/recommendations")
-def recommendations(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    profile = _load_profile(str(payload.get("profile_id", "")).strip())
+def recommendations(
+    payload: dict[str, Any] = Body(...),
+    user: AuthUser = Depends(_current_user),
+) -> dict[str, Any]:
+    profile = _load_profile(str(payload.get("profile_id", "")).strip(), user)
     if profile.home_airport is None:
         raise HTTPException(
             status_code=422,
@@ -997,7 +1104,10 @@ def recommendations(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 
 @app.post("/ai/briefing")
-def ai_briefing(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+def ai_briefing(
+    payload: dict[str, Any] = Body(...),
+    user: AuthUser = Depends(_current_user),
+) -> dict[str, Any]:
     context = payload.get("context")
     if not isinstance(context, dict):
         context = dict(payload)

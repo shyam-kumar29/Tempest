@@ -96,6 +96,31 @@ def _taf():
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("TEMPEST_MINIMUMS_PATH", str(tmp_path / "profiles.json"))
+    monkeypatch.setenv("TEMPEST_USERS_PATH", str(tmp_path / "users.json"))
+    monkeypatch.setenv("TEMPEST_SESSION_SECRET", "test-session-secret")
+    monkeypatch.setenv("TEMPEST_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("TEMPEST_FETCH_STATION_CACHE", "0")
+    monkeypatch.setenv("TEMPEST_STATION_INDEX_PATH", str(tmp_path / "station_index.csv"))
+
+    api_app = importlib.import_module("tempest_api.app")
+
+    monkeypatch.setattr(api_app, "get_latest_metar", lambda *args, **kwargs: (_metar(), "api"))
+    monkeypatch.setattr(api_app, "get_airport", lambda *args, **kwargs: (_airport(), "api"))
+    monkeypatch.setattr(api_app, "get_latest_taf", lambda *args, **kwargs: (_taf(), "api"))
+    test_client = TestClient(api_app.app)
+    response = test_client.post(
+        "/auth/signup",
+        json={"username": "pilot@example.com", "password": "correct horse battery staple"},
+    )
+    assert response.status_code == 200
+    return test_client
+
+
+@pytest.fixture()
+def unauthenticated_client(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEMPEST_MINIMUMS_PATH", str(tmp_path / "profiles.json"))
+    monkeypatch.setenv("TEMPEST_USERS_PATH", str(tmp_path / "users.json"))
+    monkeypatch.setenv("TEMPEST_SESSION_SECRET", "test-session-secret")
     monkeypatch.setenv("TEMPEST_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setenv("TEMPEST_FETCH_STATION_CACHE", "0")
     monkeypatch.setenv("TEMPEST_STATION_INDEX_PATH", str(tmp_path / "station_index.csv"))
@@ -112,6 +137,61 @@ def test_health_endpoint(client):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_auth_signup_login_logout_me(unauthenticated_client):
+    signup = unauthenticated_client.post(
+        "/auth/signup",
+        json={"username": "newpilot@example.com", "password": "correct horse battery staple"},
+    )
+    assert signup.status_code == 200
+    assert signup.json()["user"]["username"] == "newpilot@example.com"
+
+    me = unauthenticated_client.get("/auth/me")
+    assert me.status_code == 200
+    assert me.json()["user"]["username"] == "newpilot@example.com"
+
+    logout = unauthenticated_client.post("/auth/logout")
+    assert logout.status_code == 200
+    assert unauthenticated_client.get("/auth/me").status_code == 401
+
+    login = unauthenticated_client.post(
+        "/auth/login",
+        json={"username": "newpilot@example.com", "password": "correct horse battery staple"},
+    )
+    assert login.status_code == 200
+    assert unauthenticated_client.get("/auth/me").status_code == 200
+
+
+def test_auth_required_for_protected_endpoints(unauthenticated_client):
+    assert unauthenticated_client.get("/minimums").status_code == 401
+    assert unauthenticated_client.get("/weather/KLAF").status_code == 401
+    assert unauthenticated_client.post("/evaluate", json={}).status_code == 401
+    assert unauthenticated_client.post("/evaluate-route", json={}).status_code == 401
+    assert unauthenticated_client.post("/recommendations", json={}).status_code == 401
+    assert unauthenticated_client.post("/ai/briefing", json={}).status_code == 401
+
+
+def test_minimums_are_isolated_by_user(unauthenticated_client):
+    first = unauthenticated_client.post(
+        "/auth/signup",
+        json={"username": "first@example.com", "password": "correct horse battery staple"},
+    )
+    assert first.status_code == 200
+    assert unauthenticated_client.post(
+        "/minimums/primary",
+        json={"display_name": "First"},
+    ).status_code == 200
+    assert len(unauthenticated_client.get("/minimums").json()["profiles"]) == 1
+
+    unauthenticated_client.post("/auth/logout")
+    second = unauthenticated_client.post(
+        "/auth/signup",
+        json={"username": "second@example.com", "password": "correct horse battery staple"},
+    )
+    assert second.status_code == 200
+    assert unauthenticated_client.get("/minimums").json()["profiles"] == []
+    assert unauthenticated_client.get("/minimums/primary").status_code == 404
 
 
 def test_minimums_crud(client):

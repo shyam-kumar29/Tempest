@@ -16,15 +16,14 @@ class MinimumsStoreError(RuntimeError):
 
 
 class JsonMinimumsStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, owner_id: str | None = None) -> None:
         self.path = path
+        self.owner_id = owner_id
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def list_profiles(self) -> list[MinimumsProfile]:
         data = self._load_raw()
-        profiles_raw = data.get("profiles", {})
-        if not isinstance(profiles_raw, dict):
-            raise MinimumsStoreError("Invalid minimums store format: profiles must be an object")
+        profiles_raw = self._profiles_raw(data)
 
         profiles: list[MinimumsProfile] = []
         for item in profiles_raw.values():
@@ -39,9 +38,7 @@ class JsonMinimumsStore:
             raise MinimumsValidationError("profile_id is required")
 
         data = self._load_raw()
-        profiles_raw = data.get("profiles", {})
-        if not isinstance(profiles_raw, dict):
-            raise MinimumsStoreError("Invalid minimums store format: profiles must be an object")
+        profiles_raw = self._profiles_raw(data)
 
         raw = profiles_raw.get(key)
         if raw is None:
@@ -54,12 +51,7 @@ class JsonMinimumsStore:
         profile.validate()
 
         data = self._load_raw()
-        profiles_raw = data.get("profiles")
-        if profiles_raw is None:
-            profiles_raw = {}
-            data["profiles"] = profiles_raw
-        if not isinstance(profiles_raw, dict):
-            raise MinimumsStoreError("Invalid minimums store format: profiles must be an object")
+        profiles_raw = self._profiles_raw(data)
 
         now = utc_now_iso()
         existing = profiles_raw.get(profile.profile_id)
@@ -108,9 +100,7 @@ class JsonMinimumsStore:
             raise MinimumsValidationError("profile_id is required")
 
         data = self._load_raw()
-        profiles_raw = data.get("profiles", {})
-        if not isinstance(profiles_raw, dict):
-            raise MinimumsStoreError("Invalid minimums store format: profiles must be an object")
+        profiles_raw = self._profiles_raw(data)
 
         if key not in profiles_raw:
             return False
@@ -134,6 +124,36 @@ class JsonMinimumsStore:
             raise MinimumsStoreError("Invalid minimums store format: root must be an object")
 
         return raw
+
+    def _profiles_raw(self, data: dict[str, Any]) -> dict[str, Any]:
+        if self.owner_id is None:
+            profiles = data.get("profiles")
+            if profiles is None:
+                profiles = {}
+                data["profiles"] = profiles
+            if not isinstance(profiles, dict):
+                raise MinimumsStoreError("Invalid minimums store format: profiles must be an object")
+            return profiles
+
+        users = data.get("users")
+        if users is None:
+            users = {}
+            data["users"] = users
+        if not isinstance(users, dict):
+            raise MinimumsStoreError("Invalid minimums store format: users must be an object")
+        user_bucket = users.get(self.owner_id)
+        if user_bucket is None:
+            user_bucket = {"profiles": {}}
+            users[self.owner_id] = user_bucket
+        if not isinstance(user_bucket, dict):
+            raise MinimumsStoreError("Invalid minimums store format: user profile bucket must be an object")
+        profiles = user_bucket.get("profiles")
+        if profiles is None:
+            profiles = {}
+            user_bucket["profiles"] = profiles
+        if not isinstance(profiles, dict):
+            raise MinimumsStoreError("Invalid minimums store format: user profiles must be an object")
+        return profiles
 
     def _save_raw(self, data: dict[str, Any]) -> None:
         try:
