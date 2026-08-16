@@ -3,6 +3,7 @@ const state = {
   selectedProfile: null,
   busy: false,
   aiStatus: null,
+  user: null,
 };
 
 const fields = [
@@ -74,7 +75,16 @@ function formatFavoriteAirports(favorites) {
 
 function setBusy(isBusy) {
   state.busy = isBusy;
-  for (const id of ["evaluateButton", "recommendButton", "settingsButton", "closeSettingsButton"]) {
+  for (const id of [
+    "evaluateButton",
+    "recommendButton",
+    "settingsButton",
+    "closeSettingsButton",
+    "loginButton",
+    "signupButton",
+    "logoutButton",
+    "acknowledgeDisclaimerButton",
+  ]) {
     const element = $(id);
     if (element) element.disabled = isBusy;
   }
@@ -99,6 +109,9 @@ async function api(path, options = {}) {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
+      if (response.status === 401 && !options.allowUnauthorized) {
+        handleSignedOut();
+      }
       throw new Error(data.detail || `Request failed: ${response.status}`);
     }
     return data;
@@ -109,6 +122,55 @@ async function api(path, options = {}) {
 
 function setStatus(text) {
   $("apiStatus").textContent = text;
+}
+
+function authAcknowledgementKey() {
+  const userPart = state.user?.user_id || state.user?.username || "anonymous";
+  return `tempest:acknowledged:${userPart}`;
+}
+
+function showAuthError(message) {
+  const target = $("authError");
+  target.textContent = message;
+  target.classList.remove("hidden");
+}
+
+function clearAuthError() {
+  $("authError").textContent = "";
+  $("authError").classList.add("hidden");
+}
+
+function handleSignedOut() {
+  state.user = null;
+  state.profiles = [];
+  state.selectedProfile = null;
+  $("userStatus").classList.add("hidden");
+  $("logoutButton").classList.add("hidden");
+  $("authOverlay").classList.remove("hidden");
+  $("settingsOverlay").classList.add("hidden");
+  $("disclaimerOverlay").classList.add("hidden");
+  $("result").classList.add("hidden");
+  $("aiDecision").classList.add("hidden");
+  setWorkflowEnabled(false);
+}
+
+function handleSignedIn(user) {
+  state.user = user;
+  $("userStatus").textContent = user.username;
+  $("userStatus").classList.remove("hidden");
+  $("logoutButton").classList.remove("hidden");
+  $("authOverlay").classList.add("hidden");
+  setWorkflowEnabled(true);
+  if (!localStorage.getItem(authAcknowledgementKey())) {
+    $("disclaimerOverlay").classList.remove("hidden");
+  }
+}
+
+function setWorkflowEnabled(enabled) {
+  for (const id of ["recommendButton", "evaluateButton", "settingsButton"]) {
+    const element = $(id);
+    if (element) element.disabled = !enabled;
+  }
 }
 
 function openSettings() {
@@ -293,6 +355,53 @@ async function loadProfiles() {
   const data = await api("/minimums");
   state.profiles = data.profiles || [];
   renderProfiles();
+}
+
+async function loadCurrentUser() {
+  try {
+    const data = await api("/auth/me", { allowUnauthorized: true });
+    handleSignedIn(data.user);
+    return data.user;
+  } catch (error) {
+    handleSignedOut();
+    return null;
+  }
+}
+
+async function submitAuth(mode) {
+  if (state.busy) return;
+  clearAuthError();
+  setBusy(true);
+  try {
+    const data = await api(`/auth/${mode}`, {
+      method: "POST",
+      body: JSON.stringify({
+        username: $("authUsername").value.trim(),
+        password: $("authPassword").value,
+      }),
+      allowUnauthorized: true,
+    });
+    handleSignedIn(data.user);
+    await loadProfiles();
+    setStatus("Ready");
+  } catch (error) {
+    showAuthError(error.message);
+    setStatus("Sign in required");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function logout() {
+  if (state.busy) return;
+  setBusy(true);
+  try {
+    await api("/auth/logout", { method: "POST", allowUnauthorized: true });
+  } finally {
+    setBusy(false);
+    handleSignedOut();
+    setStatus("Signed out");
+  }
 }
 
 async function loadAiStatus() {
@@ -884,6 +993,16 @@ async function init() {
   $("route").value = localStorage.getItem("tempest:lastRoute") || "KLAF - KIND";
   $("plannedDeparture").value = localDateTimeValue(new Date(Date.now() + 60 * 60 * 1000));
   $("minimumsForm").addEventListener("submit", saveProfile);
+  $("authForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitAuth("login");
+  });
+  $("signupButton").addEventListener("click", () => submitAuth("signup"));
+  $("logoutButton").addEventListener("click", logout);
+  $("acknowledgeDisclaimerButton").addEventListener("click", () => {
+    localStorage.setItem(authAcknowledgementKey(), "1");
+    $("disclaimerOverlay").classList.add("hidden");
+  });
   $("profileSelect").addEventListener("change", (event) => {
     const profile = state.profiles.find((item) => item.profile_id === event.target.value);
     if (profile) {
@@ -921,10 +1040,13 @@ async function init() {
     await api("/health");
     setStatus("Ready");
     await loadAiStatus();
-    await loadProfiles();
-    if (!state.profiles.length) {
-      $("profileId").value = "primary";
-      $("displayName").value = "Primary Profile";
+    const user = await loadCurrentUser();
+    if (user) {
+      await loadProfiles();
+      if (!state.profiles.length) {
+        $("profileId").value = "primary";
+        $("displayName").value = "Primary Profile";
+      }
     }
   } catch (error) {
     setStatus(error.message);

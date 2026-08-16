@@ -15,6 +15,8 @@
           <p class="lede">Get personalized destination ideas or check a specific route against saved minimums, live METAR/TAF, and runway winds.</p>
         </div>
         <div class="top-actions">
+          <div id="userStatus" class="status hidden">Signed out</div>
+          <button id="logoutButton" class="compact-button secondary-button hidden" type="button">Log Out</button>
           <div id="apiStatus" class="status">Checking API</div>
           <button
             id="settingsButton"
@@ -189,6 +191,52 @@
 
           <button type="submit">Save Minimums</button>
         </form>
+      </section>
+    </div>
+    <div id="authOverlay" class="settings-overlay" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+      <section class="settings-panel auth-panel">
+        <div class="settings-head">
+          <div>
+            <p class="eyebrow">Private Beta</p>
+            <h2 id="authTitle">Sign in to Tempest</h2>
+            <p>Use a beta account to keep personal minimums separate from other pilots.</p>
+          </div>
+        </div>
+
+        <form id="authForm" class="minimums-form">
+          <div class="identity-grid">
+            <label>
+              Username or Email
+              <input id="authUsername" name="username" autocomplete="username" required />
+            </label>
+            <label>
+              Password
+              <input id="authPassword" name="password" type="password" autocomplete="current-password" required />
+            </label>
+          </div>
+          <div id="authError" class="station-error hidden"></div>
+          <div class="button-row auth-actions">
+            <button id="loginButton" type="submit">Log In</button>
+            <button id="signupButton" class="compact-button secondary-button" type="button">Create Account</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
+    <div id="disclaimerOverlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="disclaimerTitle">
+      <section class="settings-panel auth-panel">
+        <div class="settings-head">
+          <div>
+            <p class="eyebrow">Safety</p>
+            <h2 id="disclaimerTitle">Advisory use only</h2>
+            <p>Tempest helps organize weather and personal minimums. It is not a regulatory briefing, flight release, or aircraft performance tool.</p>
+          </div>
+        </div>
+        <div class="disclaimer-copy">
+          <p>Verify all weather, NOTAMs, airspace, aircraft performance, fuel, weight and balance, and legal requirements with official sources before flight.</p>
+          <p>AI output is advisory and may only add conservative cautions. You remain responsible for the go/no-go decision.</p>
+        </div>
+        <button id="acknowledgeDisclaimerButton" type="button">I Understand</button>
       </section>
     </div>
     <script src="/app.js?v=20260607-route-weather"></script>

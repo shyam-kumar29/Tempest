@@ -401,6 +401,10 @@ button:disabled {
   box-shadow: 0 28px 90px rgba(23, 32, 28, 0.22);
 }
 
+.auth-panel {
+  width: min(560px, calc(100% - 36px));
+}
+
 .settings-head {
   display: flex;
   justify-content: space-between;
@@ -414,6 +418,23 @@ button:disabled {
   margin-bottom: 0;
   color: var(--muted);
   font-weight: 650;
+}
+
+.auth-actions {
+  justify-content: flex-start;
+  margin-top: 12px;
+}
+
+.disclaimer-copy {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 18px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.disclaimer-copy p {
+  margin-bottom: 0;
 }
 
 .close-button {
