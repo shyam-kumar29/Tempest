@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: tempest-beta
+    runtime: python
+    plan: starter
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "PYTHONPATH=backend/app uvicorn tempest_api.app:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: TEMPEST_MINIMUMS_PATH
+        value: /var/data/minimums/profiles.json
+      - key: TEMPEST_USERS_PATH
+        value: /var/data/auth/users.json
+      - key: TEMPEST_CACHE_DIR
+        value: /var/data/cache
+      - key: TEMPEST_FETCH_STATION_CACHE
+        value: "1"
+      - key: TEMPEST_COOKIE_SECURE
+        value: "1"
+      - key: TEMPEST_AI_MODEL
+        value: gpt-5-mini
+      - key: TEMPEST_AI_TIMEOUT_SECONDS
+        value: "90"
+      - key: TEMPEST_AI_REASONING_EFFORT
+        value: minimal
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: TEMPEST_SESSION_SECRET
+        sync: false
+    disk:
+      name: tempest-data
+      mountPath: /var/data
+      sizeGB: 1

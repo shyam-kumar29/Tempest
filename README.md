@@ -1,37 +1,43 @@
 # Tempest
 
-Pure Python backend foundation for aviation weather workflows.
+Tempest is a private-beta flight planning assistant for pilots. It stores personal
+minimums, checks METAR/TAF and runway constraints, recommends destinations from a
+home airport, evaluates route weather, and can add an advisory OpenAI briefing.
 
-## Current scope
+Tempest is advisory software only. It is not a regulatory weather briefing,
+flight release, aircraft performance tool, or substitute for pilot judgment.
 
-- Fetch latest METAR from AviationWeather.gov Data API
-- Optionally fetch latest TAF from AviationWeather.gov Data API
-- Optionally fetch airport/runway data from AviationWeather.gov Data API
-- Normalize the METAR payload into a typed internal model
-- Manage personal minimums profiles in a local JSON store
-- Compute runway wind components when runway heading data is available
-- Evaluate current conditions against a saved personal minimums profile
-- Cache responses locally to reduce API calls
-- Expose a CLI command for station lookup
+## Features
 
-Fuel reserve is evaluated when the app supplies current usable reserve in minutes. Destination suggestions and aircraft performance/range ranking are future work.
+- Open signup with password login and HTTP-only session cookies
+- Per-user personal minimums profiles stored in JSON
+- Destination recommendations from a home airport with distance range controls
+- Favorite airport boosting without overriding deterministic safety decisions
+- Route checks for inputs like `KLAF - KIND`
+- Enroute weather sampling from the AviationWeather station index
+- Decoded METAR/TAF panels and explainable pass/caution/failure reasons
+- Optional server-side OpenAI advisory briefing
 
-## Project layout
+## Local Development
 
-- `backend/app/tempest`: core Python modules
-- `backend/app/tempest_api`: FastAPI app layer
-- `backend/scripts/fetch_metar.py`: CLI entrypoint
-- `frontend`: static V1 app
-- `backend/tests`: unit tests
-- `data/cache`: local API cache files
-
-## Run the V1 app
-
-Install web dependencies in your virtual environment:
+Install dependencies:
 
 ```bash
 python3 -m pip install -r requirements-dev.txt
 ```
+
+Create `.env.local` in the repo root:
+
+```bash
+OPENAI_API_KEY=sk-...
+TEMPEST_SESSION_SECRET=replace-with-a-long-random-secret
+TEMPEST_AI_MODEL=gpt-5-mini
+TEMPEST_AI_TIMEOUT_SECONDS=90
+TEMPEST_AI_REASONING_EFFORT=minimal
+```
+
+`OPENAI_API_KEY` is optional. Without it, deterministic recommendations and route
+checks still work and AI is shown as unavailable.
 
 Start the app:
 
@@ -45,141 +51,63 @@ Open:
 http://127.0.0.1:8000
 ```
 
-AI review is optional. For local AI briefings, create a `.env.local` file in the
-repo root:
+## Render Deployment
 
-```bash
+This repo includes `render.yaml` for a private beta web service.
+
+Set these Render environment variables:
+
+```text
 OPENAI_API_KEY=sk-...
+TEMPEST_SESSION_SECRET=<long random secret>
 TEMPEST_AI_MODEL=gpt-5-mini
-TEMPEST_AI_TIMEOUT_SECONDS=45
+TEMPEST_AI_TIMEOUT_SECONDS=90
 TEMPEST_AI_REASONING_EFFORT=minimal
+TEMPEST_FETCH_STATION_CACHE=1
+TEMPEST_COOKIE_SECURE=1
 ```
 
-The backend loads `.env.local` on startup, and the file is ignored by Git. You
-can also set the same values in the server environment before starting the app:
+The Render config stores JSON data on a persistent disk mounted at `/var/data`:
 
-```bash
-export OPENAI_API_KEY=...
-export TEMPEST_AI_MODEL=gpt-5-mini
-export TEMPEST_AI_TIMEOUT_SECONDS=45
-export TEMPEST_AI_REASONING_EFFORT=minimal
-PYTHONPATH=backend/app uvicorn tempest_api.app:app --reload
+```text
+TEMPEST_USERS_PATH=/var/data/auth/users.json
+TEMPEST_MINIMUMS_PATH=/var/data/minimums/profiles.json
+TEMPEST_CACHE_DIR=/var/data/cache
 ```
 
-Without `OPENAI_API_KEY`, deterministic route checks and destination recommendations
-still work; the AI panel is shown as unavailable. To let pilots use AI without
-entering their own key, host the backend yourself with `OPENAI_API_KEY` configured
-server-side and do not expose the key to the browser.
+After deployment, smoke test:
 
-## Run METAR fetch
-
-```bash
-python3 backend/scripts/fetch_metar.py KLAF
-```
-
-Useful options:
-
-```bash
-python3 backend/scripts/fetch_metar.py KLAF \
-  --cache-dir data/cache \
-  --cache-ttl-seconds 300 \
-  --min-fetch-interval-seconds 60 \
-  --include-taf \
-  --include-airport \
-  --include-runway-wind
-```
-
-Example output shape:
-
-```json
-{
-  "source": "api",
-  "metar": {
-    "icao_id": "KLAF",
-    "raw_text": "KLAF ...",
-    "observed_at": "...",
-    "wind_speed_kt": 12,
-    "flight_category": "VFR",
-    "source_payload": {
-      "...": "..."
-    }
-  }
-}
-```
-
-`source` indicates if the response came from `api`, `cache`, `throttled-cache`, or `stale-cache`.
-When `--include-taf` is set, output includes `taf` and `taf_source` (or `taf_error`).
-When `--include-airport` is set, output includes `airport` and `airport_source` (or `airport_error`).
-When `--include-runway-wind` is set, output includes `runway_wind_components`.
+1. Open the Render URL.
+2. Create a beta account.
+3. Acknowledge the advisory-use notice.
+4. Save a minimums profile with a home airport.
+5. Run destination recommendations.
+6. Run a route check such as `KLAF - KIND`.
+7. Toggle AI advisory review on and off.
 
 ## Tests
 
-```bash
-pytest -q backend/tests
-```
-
-API tests require the optional web dependencies in `requirements-dev.txt`.
-
-## Manage personal minimums
-
-Set/update a profile:
+Run the backend suite:
 
 ```bash
-python3 backend/scripts/manage_minimums.py set primary \"Primary Profile\" \
-  --min-ceiling-ft-agl 2500 \
-  --min-visibility-sm 5 \
-  --max-surface-wind-kt 20 \
-  --max-crosswind-kt 12 \
-  --max-gust-kt 28 \
-  --max-tailwind-kt 7 \
-  --min-runway-length-ft 3000 \
-  --min-runway-width-ft 75 \
-  --allowed-runway-surface asphalt \
-  --allowed-runway-surface concrete \
-  --min-fuel-reserve-day-min 45 \
-  --min-fuel-reserve-night-min 60 \
-  --allow-ifr
+pytest backend/tests
 ```
 
-All minimums fields are optional except `profile_id` and `display_name`. If a field is omitted, it is stored as empty (`null`) and ignored by downstream evaluation logic.
-
-List profiles:
+Run frontend syntax and Python compile checks:
 
 ```bash
-python3 backend/scripts/manage_minimums.py list
+node --check frontend/app.js
+python3 -m compileall backend/app
+git diff --check
 ```
 
-## Evaluate a flight
+## Important Limitations
 
-Evaluate one saved profile against the current airport weather:
-
-```bash
-python3 backend/scripts/evaluate_flight.py KLAF primary \
-  --include-taf \
-  --planned-departure 2026-04-04T18:30:00Z \
-  --taf-lookahead-hours 3 \
-  --fuel-reserve-min 60
-```
-
-By default, evaluation checks the live API first so the weather data is as current as possible. Cached data is only used as a fallback if the live fetch fails. Use `--prefer-cache` only if you explicitly want to trust fresh cache entries first.
-
-For evaluation specifically, cached reports are only trusted when the underlying data is still current:
-
-- METAR: observation/report time must be within 1 hour of current UTC time
-- TAF: current time must still fall inside the TAF valid window
-- Airport data: cached for longer because runway metadata changes rarely
-
-The evaluator currently checks:
-
-- visibility
-- ceiling
-- surface wind
-- gusts
-- IFR/night restrictions
-- runway length, width, and surface suitability
-- crosswind and tailwind against the best available runway
-- forecast ceiling, visibility, wind, and gusts in matching TAF periods
-- density altitude when temperature, altimeter, and airport elevation are available
-- fuel reserve when the current reserve is supplied
-
-The result is explainable JSON with `decision`, `fail_reasons`, `caution_reasons`, `pass_reasons`, and `unknowns`.
+- Open signup is enabled for the private beta URL; do not publish the URL widely.
+- JSON storage is acceptable for a small beta but should be replaced with a
+  database before a larger multi-user launch.
+- No email verification, password reset, audit logging, or admin dashboard yet.
+- Tempest does not evaluate aircraft-specific performance beyond saved profile
+  limits.
+- Always verify weather, NOTAMs, airspace, fuel, weight and balance, and legal
+  requirements with official sources before flight.
